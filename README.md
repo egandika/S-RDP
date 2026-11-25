@@ -1,1 +1,86 @@
-# S-RDP
+# 🎮 S-RDP — Windows AFK Gaming RDP (GitHub Actions + Tailscale)
+
+Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop (RDP)** dengan jaringan privat **Tailscale**, yang sudah dioptimasi khusus untuk **AFK game berat, macro, dan auto-clicker** tanpa *freeze* saat koneksi RDP ditutup.
+
+---
+
+## ✨ Fitur Utama (Khusus AFK Game)
+
+- **⚡ Optimasi Performa Game**: Mengaktifkan *High Performance Power Plan*, memprioritaskan CPU untuk *Foreground Application* (game), mematikan servis latar belakang berat (`SysMain`, `Windows Search`, `Windows Update`), serta mengaktifkan *Windows Audio Service* (mencegah game *force close* akibat tidak ada perangkat audio).
+- **🛡️ Anti-Freeze Saat Tutup RDP (`AFK-Disconnect-Tanpa-Freeze.bat`)**: Secara normal di Windows RDP, menutup jendela Remote Desktop akan mematikan layar virtual sehingga game 3D, macro, atau auto-clicker berhenti berjalan (*freeze*). Shortcut khusus di Desktop memindahkan sesi aktif ke `Console` (`tscon`) agar game tetap di-render 100% di belakang layar.
+- **📦 Pre-installed Game Runtimes**: Otomatis memasang **DirectX 9/10/11 End-User Legacy Runtimes** dan **Visual C++ Redistributable 2015–2022 (x86 & x64)** supaya game tidak error `.dll` (`d3dx9_43.dll`, `vcruntime140.dll`, dll).
+- **🖥️ Opsi Mesa3D Software GPU Renderer**: Karena GitHub Runner standar menggunakan CPU 4-Core / 16 GB RAM tanpa VGA diskrit, tersedia opsi unduh otomatis **Mesa3D (Gallium llvmpipe)** di `C:\Tools\Mesa3D` untuk game yang membutuhkan akselerasi OpenGL/Direct3D berbasis CPU.
+- **💾 Opsi Ekstra Ruang Penyimpanan (+30 GB SSD)**: Tersedia opsi pembersihan SDK bawaan runner jika game yang ingin diinstal berukuran besar.
+- **🔒 Aman & Privat dengan Tailscale**: Port `3389` tidak diekspos ke internet publik, hanya bisa diakses dari perangkat HP/PC milikmu yang terhubung ke jaringan Tailscale yang sama.
+
+---
+
+## 🚀 Persiapan Awal (Cuma Sekali Setup)
+
+### 1. Buat Tailscale Auth Key
+1. Buat akun gratis / login ke [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys).
+2. Pastikan kamu juga sudah menginstal & login aplikasi **Tailscale** di HP atau PC yang akan dipakai meremote.
+3. Buka menu **Settings** → **Keys** → klik **Generate auth key...**
+4. Atur konfigurasi key seperti berikut:
+   - **Reusable**: ✅ **Aktifkan (Centang)** *(agar bisa dipakai berkali-kali setiap menyalakan RDP)*.
+   - **Ephemeral**: ✅ **Aktifkan (Centang)** *(agar node RDP otomatis terhapus dari daftar perangkat Tailscale setelah workflow selesai)*.
+   - **Expiration**: Pilih `90 days` (maksimal).
+5. Klik **Generate key**, lalu **Copy** kode key yang diawali `tskey-auth-...`.
+
+### 2. Tambahkan Secrets ke Repository GitHub
+1. Buka repository GitHub ini → klik tab **Settings**.
+2. Di menu kiri, pilih **Secrets and variables** → **Actions**.
+3. Klik tombol hijau **New repository secret**, lalu tambahkan **2 secret wajib** berikut:
+
+| Nama Secret | Isi / Contoh Nilai | Keterangan |
+| :--- | :--- | :--- |
+| `TS_AUTHKEY` | `tskey-auth-kxxxxxCNTRL-xxxxxxxxxxxx` | Auth Key dari Tailscale pada Langkah 1. |
+| `RDP_PASSWORD` | `AfkGaming#2026!` | Password untuk login Windows RDP (**Wajib min. 8 karakter** kombinasi huruf besar, huruf kecil, angka, dan simbol). |
+
+---
+
+## ▶️ Cara Menjalankan RDP
+
+1. Buka tab **Actions** di repository GitHub kamu.
+2. Pilih workflow **Windows AFK Gaming RDP (Tailscale)** di panel sebelah kiri.
+3. Klik tombol **Run workflow**, lalu sesuaikan opsi jika perlu:
+   - **Durasi sesi RDP**: Pilih `60` s/d `350` menit (~5 jam 50 menit, batas maksimal GitHub Actions adalah 6 jam per run).
+   - **Versi Windows Server**: `windows-2022` (direkomendasikan karena paling stabil untuk game) atau `windows-2025`.
+   - **Username Login RDP**: Default `gamer`.
+   - **Install Game Runtimes**: Biarkan `true` agar DirectX & VC++ langsung terpasang.
+   - **Download Mesa3D**: Centang `true` hanya jika game kamu komplain error OpenGL / GPU tidak terdeteksi.
+   - **Bersihkan SDK bawaan**: Centang `true` jika ukuran game besar dan butuh tambahan ruang kosong ~30 GB.
+4. Klik **Run workflow** dan tunggu sekitar **2–3 menit**.
+5. Buka run yang sedang berjalan → lihat di bagian **Summary** (atau buka log step **`Tampilkan Informasi Koneksi RDP`**) untuk melihat **IP Tailscale** kamu (contoh: `100.x.y.z`).
+
+---
+
+## 💻 Cara Login dari PC / HP
+
+1. Pastikan aplikasi **Tailscale** di PC / HP kamu dalam posisi **Connected**.
+2. Buka aplikasi Remote Desktop:
+   - **Windows**: Buka **Remote Desktop Connection** (`mstsc`).
+   - **Android / iOS / macOS**: Install aplikasi resmi **Windows App** (dulunya Microsoft Remote Desktop) dari Play Store / App Store.
+3. Masukkan **IP Tailscale** (`100.x.y.z`), Username (`gamer`), dan Password sesuai `RDP_PASSWORD`.
+
+---
+
+## ⚠️ PENTING: Cara Tinggal AFK Agar Game Tidak Freeze!
+
+Saat kamu sudah menyalakan game, bot, atau auto-clicker di dalam RDP dan ingin menutup aplikasi Remote Desktop di HP/PC:
+
+> **JANGAN langsung klik tombol silang `[X]` / Disconnect di aplikasi Remote Desktop!**  
+> Jika langsung ditutup, Windows akan mencopot layar virtual sehingga render game & auto-clicker macet/hitam.
+
+**Cara yang benar:**
+1. Lihat di **Desktop RDP**, klik 2x file **`AFK-Disconnect-Tanpa-Freeze.bat`**.
+2. Dalam 3 detik, koneksi RDP kamu akan otomatis diputus dan sesi layar dipindahkan ke *Local Console* aktif.
+3. Game, macro, dan auto-clicker akan tetap berjalan normal 100% di belakang layar!
+4. Kapan pun kamu ingin mengecek progres AFK, cukup sambungkan ulang RDP seperti biasa.
+
+### Tips Tambahan Setting Grafis Game
+Karena runner GitHub menggunakan CPU 4 vCPU + 16 GB RAM tanpa GPU fisik:
+- Gunakan **Windowed Mode** dengan resolusi rendah (`800x600`, `1024x768`, atau `1280x720`).
+- Matikan efek berat (*Shadow*, *Anti-Aliasing*, *Bloom*, *Motion Blur*).
+- Batasi **FPS Limit ke 15–30 FPS** di pengaturan in-game agar CPU tetap dingin dan stabil selama berjam-jam AFK.
+- Jika sudah selesai AFK sebelum timer habis, klik 2x **`Matikan-Server-RDP.bat`** di Desktop untuk menghemat kuota menit GitHub Actions.

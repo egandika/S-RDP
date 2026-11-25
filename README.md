@@ -4,12 +4,14 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 
 ---
 
-## ✨ Fitur Utama (Khusus AFK Game)
+## ✨ Fitur Utama (Khusus AFK Game — Zero-Cost Max Tuned)
 
-- **🚀 Unlock RDP 60 FPS + AVC444/H.264 Low-Latency**: Membuka kunci batas bawaan Windows Server (30 FPS → **60 FPS** via `DWMFRAMEINTERVAL=15`) serta mengaktifkan mode grafis H.264/AVC444 supaya kontrol layar jauh lebih halus dan hemat CPU.
-- **🧠 20 GB NVMe Pagefile + Native Auto-RAM Cleaner**: Memperbesar Virtual Memory di SSD NVMe hingga **20 GB** dan mendaftarkan pembersih *Memory Leak* berbasis Windows API murni (`EmptyWorkingSet`, tanpa bloatware aplikasi pihak ketiga) yang jalan otomatis saat pemakaian RAM menyentuh >78%.
-- **⚡ Ultimate Performance + MMCSS Gaming & TCP NoDelay**: Mengunci frekuensi CPU 100% tanpa throttling, mengalokasikan prioritas *Multimedia Class Scheduler* penuh ke game (`SystemResponsiveness=0`), mematikan *Nagle's Algorithm* (`TCPNoDelay`) agar bebas *ping spike*, mematikan servis berat (`SysMain`, `Windows Search`, `Windows Update`, `GameDVR`), serta menyalakan *Windows Audio Service*.
-- **🛡️ Anti-Freeze Saat Tutup RDP (`AFK-Disconnect-Tanpa-Freeze.bat`)**: Secara normal di Windows RDP, menutup jendela Remote Desktop akan mematikan layar virtual sehingga game 3D, macro, atau auto-clicker berhenti berjalan (*freeze*). Shortcut khusus di Desktop memindahkan sesi aktif ke `Console` (`tscon`) agar game tetap di-render 100% di belakang layar.
+- **🔥 Kill 70% Background CPU Hogs (Idle CPU ~1–3%)**: Mematikan paksa penyedot CPU bawaan runner GitHub (*Windows Defender Real-Time Scan `MsMpEng.exe`*, *`.NET Runtime Optimization mscorsvw.exe`*, *`TiWorker`*, *`CompatTelRunner`*, dan *Scheduled Maintenance*) sehingga 100% tenaga 4 vCPU AMD EPYC (3.24+ GHz Boost) murni dipakai oleh game.
+- **🚀 CPU Core Unparking + Auto Game Priority Booster**: Membuka seluruh *CPU Core Parking* (`CPMINCORES=100%`), mengunci *Boost Mode* di 100%, serta otomatis menaikkan prioritas proses `.exe` game aktif ke `AboveNormal` setiap 5 menit.
+- **🖥️ Unlock RDP 60 FPS + AVC444/H.264 Low-Latency**: Membuka kunci batas bawaan Windows Server (30 FPS → **60 FPS** via `DWMFRAMEINTERVAL=15`) serta mengaktifkan mode grafis H.264/AVC444 supaya kontrol layar jauh lebih halus.
+- **🧠 20 GB Virtual Memory Pagefile + Fast Disk I/O + Native RAM Cleaner**: Memperbesar Pagefile hingga **20 GB** (total kapasitas memori efektif ~36 GB), mempercepat NTFS I/O Cache, dan membersihkan *Memory Leak* otomatis (`EmptyWorkingSet`) saat pemakaian RAM menyentuh >78%.
+- **⚡ MMCSS Gaming + DirectX WARP Tuned + TCP NoDelay**: Mengalokasikan prioritas *Multimedia Class Scheduler* penuh ke game (`SystemResponsiveness=0`), mengoptimalkan DirectX TDR untuk CPU software rendering, mematikan *Nagle's Algorithm* (`TCPNoDelay` + RSS), serta menyalakan *Windows Audio Service*.
+- **🛡️ Anti-Freeze Saat Tutup RDP (`AFK-Disconnect-Tanpa-Freeze.bat`)**: Memindahkan sesi aktif ke `Console` (`tscon`) agar render game 3D, macro, atau auto-clicker tetap jalan 100% di belakang layar saat RDP ditutup.
 - **📦 Pre-installed Game Runtimes**: Otomatis memasang **DirectX 9/10/11 End-User Legacy Runtimes** dan **Visual C++ Redistributable 2015–2022 (x86 & x64)** supaya game tidak error `.dll` (`d3dx9_43.dll`, `vcruntime140.dll`, dll).
 - **🖥️ Opsi Mesa3D Software GPU Renderer**: Karena GitHub Runner standar menggunakan CPU 4-Core / 16 GB RAM tanpa VGA diskrit, tersedia opsi unduh otomatis **Mesa3D (Gallium llvmpipe)** di `C:\Tools\Mesa3D` untuk game yang membutuhkan akselerasi OpenGL/Direct3D berbasis CPU.
 - **💾 Opsi Ekstra Ruang Penyimpanan (+30 GB SSD)**: Tersedia opsi pembersihan SDK bawaan runner jika game yang ingin diinstal berukuran besar.

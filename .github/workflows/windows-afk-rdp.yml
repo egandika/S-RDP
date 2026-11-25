@@ -141,6 +141,11 @@ jobs:
 
           $freeC = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
           $freeD = if (Get-PSDrive D -ErrorAction SilentlyContinue) { [math]::Round((Get-PSDrive D).Free / 1GB, 1) } else { 0 }
+          $cpuObj = Get-CimInstance Win32_Processor | Select-Object -First 1
+          $cpuName = $cpuObj.Name.Trim()
+          $cpuCores = $cpuObj.NumberOfCores
+          $cpuThreads = $cpuObj.NumberOfLogicalProcessors
+          $osRamGb = [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize / 1MB, 1)
 
           Write-Host ""
           Write-Host "================================================================" -ForegroundColor Green
@@ -153,7 +158,8 @@ jobs:
           Write-Host " Port RDP            : 3389"
           Write-Host " Username            : $($env:RDP_USER)" -ForegroundColor Cyan
           Write-Host " Password            : (Sesuai Secret RDP_PASSWORD kamu)" -ForegroundColor Cyan
-          Write-Host " Sisa Disk Space     : C: $freeC GB | D: $freeD GB"
+          Write-Host " Hardware Runner     : $cpuName ($cpuCores Cores / $cpuThreads vCPU Threads) | $osRamGb GB RAM"
+          Write-Host " Sisa Disk Space     : C: $freeC GB | D: $freeD GB (+ 20 GB Virtual Pagefile)"
           Write-Host " Durasi Maksimal     : $($env:DURATION) menit"
           Write-Host "----------------------------------------------------------------"
           Write-Host " PENTING UNTUK AFK GAME:" -ForegroundColor Magenta
@@ -172,6 +178,7 @@ jobs:
             "| **MagicDNS** | ``$dnsName`` |",
             "| **Username** | ``$($env:RDP_USER)`` |",
             "| **Password** | Sesuai GitHub Secret ``RDP_PASSWORD`` |",
+            "| **Spesifikasi Mesin** | ``$cpuName`` (**$cpuCores Cores / $cpuThreads vCPU Threads**, **$osRamGb GB RAM + 20 GB Pagefile**) |",
             "| **Kapasitas Kosong** | ``C:\`` **$freeC GB** / ``D:\`` **$freeD GB** |",
             "| **Batas Waktu** | **$($env:DURATION) Menit** |",
             "",

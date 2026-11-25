@@ -1,0 +1,225 @@
+name: "Windows AFK Gaming RDP (Tailscale)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "Durasi sesi RDP dalam menit (Maks 350 menit / ~5 jam 50 menit)"
+        required: true
+        default: "350"
+        type: choice
+        options:
+          - "60"
+          - "120"
+          - "180"
+          - "240"
+          - "300"
+          - "350"
+      runner_os:
+        description: "Versi Windows Server Runner"
+        required: true
+        default: "windows-2022"
+        type: choice
+        options:
+          - "windows-2022"
+          - "windows-2025"
+          - "windows-latest"
+      rdp_user:
+        description: "Username Login RDP"
+        required: true
+        default: "gamer"
+        type: string
+      hostname:
+        description: "Nama Perangkat di Tailscale"
+        required: true
+        default: "s-rdp-afk"
+        type: string
+      install_game_runtimes:
+        description: "Install DirectX 9/10/11 Legacy + Visual C++ All-in-One (Wajib untuk kebanyakan game)"
+        required: true
+        default: true
+        type: boolean
+      install_mesa3d:
+        description: "Download Mesa3D Software GPU Renderer (Aktifkan jika game menolak jalan tanpa OpenGL/GPU)"
+        required: false
+        default: false
+        type: boolean
+      cleanup_sdk_space:
+        description: "Bersihkan SDK bawaan GitHub (Android/GHC/CodeQL) untuk tambah ~30GB ruang kosong SSD ( butuh +2 menit awal )"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: s-rdp-tailscale-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  afk-rdp:
+    name: "S-RDP Windows + Tailscale"
+    runs-on: ${{ inputs.runner_os }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validasi Secret Tailscale & Password RDP
+        id: validate
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+            Write-Error "Secret 'TS_AUTHKEY' belum diatur! Buka Settings -> Secrets and variables -> Actions -> New repository secret, lalu tambahkan TS_AUTHKEY dari Tailscale Admin Console."
+            exit 1
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            Write-Error "Secret 'RDP_PASSWORD' belum diatur! Buka Settings -> Secrets and variables -> Actions -> New repository secret, lalu tambahkan RDP_PASSWORD (minimal 8 karakter kombinasi huruf besar, huruf kecil, angka, dan simbol, contoh: GamingAfk@2026)."
+            exit 1
+          }
+          if ($env:RDP_PASSWORD.Length -lt 8) {
+            Write-Error "RDP_PASSWORD terlalu pendek! Windows Server mewajibkan minimal 8 karakter dengan kombinasi huruf besar, huruf kecil, dan angka/simbol."
+            exit 1
+          }
+          Write-Host "Secret TS_AUTHKEY & RDP_PASSWORD terdeteksi dengan benar." -ForegroundColor Green
+
+      - name: (Opsional) Bersihkan Disk untuk Game Ukuran Besar (+30GB Free)
+        if: ${{ inputs.cleanup_sdk_space == true }}
+        shell: pwsh
+        run: |
+          Write-Host "Membersihkan folder SDK besar yang tidak terpakai oleh game..." -ForegroundColor Cyan
+          $Targets = @(
+            "C:\Android",
+            "C:\hostedtoolcache\windows\CodeQL",
+            "C:\ghcup",
+            "C:\Program Files\dotnet\sdk",
+            "D:\a\_temp"
+          )
+          foreach ($dir in $Targets) {
+            if (Test-Path $dir) {
+              Write-Host "Menghapus $dir ..."
+              cmd /c "rmdir /s /q `"$dir`"" 2>$null
+            }
+          }
+          Get-PSDrive C, D -ErrorAction SilentlyContinue | Format-Table Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}
+
+      - name: Optimasi Windows Server & Setup Mode AFK Game
+        shell: pwsh
+        env:
+          SETUP_USER: ${{ inputs.rdp_user }}
+          SETUP_PASS: ${{ secrets.RDP_PASSWORD }}
+          INSTALL_RUNTIMES: ${{ inputs.install_game_runtimes }}
+          INSTALL_MESA: ${{ inputs.install_mesa3d }}
+        run: |
+          & .\scripts\setup-afk-windows.ps1 `
+            -RdpUser $env:SETUP_USER `
+            -RdpPassword $env:SETUP_PASS `
+            -InstallGameRuntimes "$($env:INSTALL_RUNTIMES)".ToLower() `
+            -InstallMesa3D "$($env:INSTALL_MESA)".ToLower()
+
+      - name: Install & Hubungkan Tailscale VPN
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: ${{ inputs.hostname }}
+          version: latest
+
+      - name: Tampilkan Informasi Koneksi RDP
+        id: conn_info
+        shell: pwsh
+        env:
+          RDP_USER: ${{ inputs.rdp_user }}
+          DURATION: ${{ inputs.duration_minutes }}
+        run: |
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          $tsIp = (& $tsExe ip -4 | Select-Object -First 1).Trim()
+          $tsStatus = (& $tsExe status --json | ConvertFrom-Json)
+          $dnsName = $tsStatus.Self.DNSName.TrimEnd('.')
+
+          $freeC = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+          $freeD = if (Get-PSDrive D -ErrorAction SilentlyContinue) { [math]::Round((Get-PSDrive D).Free / 1GB, 1) } else { 0 }
+
+          Write-Host ""
+          Write-Host "================================================================" -ForegroundColor Green
+          Write-Host "   S-RDP (AFK GAMING EDITION) SUDAH AKTIF & SIAP DIGUNAKAN!     " -ForegroundColor Green
+          Write-Host "================================================================" -ForegroundColor Green
+          Write-Host " IP Tailscale (IPv4) : $tsIp" -ForegroundColor Yellow
+          if ($dnsName) {
+            Write-Host " MagicDNS Hostname   : $dnsName" -ForegroundColor Yellow
+          }
+          Write-Host " Port RDP            : 3389"
+          Write-Host " Username            : $($env:RDP_USER)" -ForegroundColor Cyan
+          Write-Host " Password            : (Sesuai Secret RDP_PASSWORD kamu)" -ForegroundColor Cyan
+          Write-Host " Sisa Disk Space     : C: $freeC GB | D: $freeD GB"
+          Write-Host " Durasi Maksimal     : $($env:DURATION) menit"
+          Write-Host "----------------------------------------------------------------"
+          Write-Host " PENTING UNTUK AFK GAME:" -ForegroundColor Magenta
+          Write-Host " Saat mau tutup aplikasi RDP dan tinggal AFK, JANGAN klik [X]!"
+          Write-Host " Klik 2x 'AFK-Disconnect-Tanpa-Freeze.bat' di Desktop RDP agar"
+          Write-Host " game & auto-clicker tidak freeze/pause di background!"
+          Write-Host "================================================================" -ForegroundColor Green
+
+          # Tulis ringkasan rapi ke GitHub Actions Job Summary
+          $summaryLines = @(
+            "## 🎮 S-RDP (AFK Gaming Edition) Siap Digunakan!",
+            "",
+            "| Parameter | Detail Koneksi |",
+            "| :--- | :--- |",
+            "| **Tailscale IP** | ``$tsIp`` |",
+            "| **MagicDNS** | ``$dnsName`` |",
+            "| **Username** | ``$($env:RDP_USER)`` |",
+            "| **Password** | Sesuai GitHub Secret ``RDP_PASSWORD`` |",
+            "| **Kapasitas Kosong** | ``C:\`` **$freeC GB** / ``D:\`` **$freeD GB** |",
+            "| **Batas Waktu** | **$($env:DURATION) Menit** |",
+            "",
+            "### 🛡️ Tips Penting Saat Tinggal AFK",
+            "1. Buka **Remote Desktop Connection (``mstsc``)** di PC atau **Windows App / RD Client** di HP (pastikan Tailscale di perangkatmu sudah **Connected** di akun yang sama).",
+            "2. Masukkan IP **``$tsIp``** lalu login dengan username **``$($env:RDP_USER)``**.",
+            "3. Jalankan game kamu (disarankan **Windowed Mode**, grafis **Low**, limit **20-30 FPS**).",
+            "4. **PENTING:** Saat ingin menutup RDP supaya game jalan sendiri, klik 2x shortcut **``AFK-Disconnect-Tanpa-Freeze.bat``** di Desktop (jangan langsung tutup silang jendela RDP agar layar game tidak berhenti dirender).",
+            "5. Jika ingin mematikan server lebih cepat, klik 2x **``Matikan-Server-RDP.bat``** di Desktop atau klik **Cancel workflow** di GitHub."
+          )
+          ($summaryLines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Menjaga Sesi AFK Tetap Hidup (Monitoring Loop)
+        shell: pwsh
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          $maxMinutes = [int]$env:DURATION_MINUTES
+          if ($maxMinutes -gt 350) { $maxMinutes = 350 }
+          if ($maxMinutes -lt 5) { $maxMinutes = 5 }
+
+          $endTime = (Get-Date).AddMinutes($maxMinutes)
+          Write-Host "Sesi RDP akan dijaga tetap hidup hingga $($endTime.ToString('HH:mm:ss')) UTC ($maxMinutes menit)..." -ForegroundColor Cyan
+
+          while ((Get-Date) -lt $endTime) {
+            if (Test-Path "C:\stop-s-rdp.flag") {
+              Write-Host "Menerima sinyal stop dari Desktop (Matikan-Server-RDP.bat). Mematikan RDP dengan aman..." -ForegroundColor Yellow
+              break
+            }
+
+            $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 0)
+            $cpuLoad = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+            $osInfo = Get-CimInstance Win32_OperatingSystem
+            $usedRamGb = [math]::Round(($osInfo.TotalVisibleMemorySize - $osInfo.FreePhysicalMemory) / 1MB, 1)
+            $totalRamGb = [math]::Round($osInfo.TotalVisibleMemorySize / 1MB, 1)
+
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Status AFK Aktif | Sisa Waktu: $remaining mnt | CPU: $cpuLoad% | RAM: $usedRamGb / $totalRamGb GB"
+            Start-Sleep -Seconds 60
+          }
+
+          Write-Host "Durasi sesi selesai. Membersihkan sesi..." -ForegroundColor Green
+
+      - name: Logout Tailscale Node (Cleanup)
+        if: always()
+        shell: pwsh
+        run: |
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (Test-Path $tsExe) {
+            Write-Host "Memutuskan node dari Tailscale agar daftar perangkat tetap bersih..."
+            & $tsExe logout 2>$null
+          }

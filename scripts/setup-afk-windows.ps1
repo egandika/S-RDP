@@ -356,9 +356,10 @@ if ($InstallGameRuntimes -eq "true") {
         Write-Host "    DirectX Legacy Runtimes already present — skipped." -ForegroundColor Green
     }
 
-    # Smart VC++ Check: GitHub Actions Windows images pre-install modern VC++ 14.x (both x64 & x86). Skip redundant download if both exist!
+    # Smart VC++ Check: x86 runtime lives under WOW6432Node on 64-bit Windows!
     $vc64Installed = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" -ErrorAction SilentlyContinue).Installed -eq 1
-    $vc86Installed = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86" -ErrorAction SilentlyContinue).Installed -eq 1
+    $vc86Installed = ((Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x86" -ErrorAction SilentlyContinue).Installed -eq 1) -or `
+                     ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86" -ErrorAction SilentlyContinue).Installed -eq 1)
     if ($vc64Installed -and $vc86Installed) {
         Write-Host "    Visual C++ 2015-2022 (x64 & x86) already pre-installed on runner — skipped (saved ~20s)!" -ForegroundColor Green
     } else {
@@ -484,3 +485,5 @@ OPTIMASI AKTIF DI SERVER INI:
 Set-Content -Path "$PublicDesktop\BACA-PANDUAN-AFK-GAME.txt" -Value $GuideTxt -Encoding UTF8
 
 Write-Host "==> Zero-Cost Maximum AFK Optimization Complete!" -ForegroundColor Green
+$global:LASTEXITCODE = 0
+exit 0

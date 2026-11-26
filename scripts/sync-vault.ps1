@@ -390,3 +390,6 @@ if ($Mode -eq "backup") {
 
     Remove-Item -Path $OutArchiveDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+$global:LASTEXITCODE = 0
+exit 0

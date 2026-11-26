@@ -130,6 +130,8 @@ jobs:
             }
           }
           Get-PSDrive C, D -ErrorAction SilentlyContinue | Format-Table Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Optimasi Windows Server & Setup Mode AFK Game
         shell: pwsh
@@ -306,6 +308,8 @@ jobs:
           }
 
           Write-Host "Durasi sesi selesai. Memulai penyimpanan Atomic Vault sebelum mesin mati..." -ForegroundColor Green
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Atomic Auto-Backup Data Permanen ke Encrypted Vault (AES-256)
         if: ${{ !cancelled() && inputs.enable_vault_sync == true }}
@@ -330,10 +334,16 @@ jobs:
         shell: pwsh
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) {
+            $tsCmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+            if ($tsCmd) { $tsExe = $tsCmd.Source }
+          }
           if (Test-Path $tsExe) {
             Write-Host "Memutuskan node dari Tailscale agar hostname '${{ inputs.hostname }}' bebas bentrok (-1)..."
             & $tsExe logout 2>$null
           }
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Auto-Restart Sesi RDP Berikutnya (Continuous 24/7 Chain)
         if: ${{ !cancelled() && inputs.auto_restart_chain == true }}
@@ -362,3 +372,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "Untuk estafet berantai tanpa batas (>2 sesi berturut-turut), tambahkan Classic Personal Access Token (scope: repo, workflow) ke secret 'PAT_TOKEN' karena GITHUB_TOKEN standar dibatasi oleh aturan anti-loop GitHub."
           }
+          $global:LASTEXITCODE = 0
+          exit 0

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       duration_minutes:
-        description: "Durasi sesi RDP dalam menit (Maks 340 menit agar sisa waktu cukup untuk Auto-Save Vault)"
+        description: "Durasi sesi RDP dalam menit (Maks 330 menit agar sisa waktu aman untuk Atomic Auto-Backup)"
         required: true
-        default: "340"
+        default: "330"
         type: choice
         options:
           - "60"
@@ -14,16 +14,22 @@ on:
           - "180"
           - "240"
           - "300"
-          - "340"
+          - "330"
       runner_os:
-        description: "Versi Windows Server Runner (windows-2022 paling ringan CPU)"
+        description: "Pilih Spesifikasi Runner (windows-2022/2025 = 4 vCPU x64 Gratis | windows-11-arm = 4 Physical Cores Win11 Gratis | 8-64core butuh Larger Runner)"
         required: true
         default: "windows-2022"
         type: choice
         options:
           - "windows-2022"
+          - "windows-11-arm"
           - "windows-2025"
           - "windows-latest"
+          - "windows-latest-8-cores"
+          - "windows-2022-8core"
+          - "windows-2022-16core"
+          - "windows-2022-32core"
+          - "windows-2022-64core"
       rdp_user:
         description: "Username Login RDP"
         required: true
@@ -35,7 +41,7 @@ on:
         default: "s-rdp-afk"
         type: string
       enable_vault_sync:
-        description: "Aktifkan Anti-Reset 6 Jam (Auto-Restore & Auto-Backup Steam, Discord, & Folder Permanen terenkripsi AES-256)"
+        description: "Aktifkan Anti-Reset 6 Jam (Atomic AES-256 Restore & Backup untuk Steam, Discord, & Folder Permanen)"
         required: true
         default: true
         type: boolean
@@ -45,17 +51,17 @@ on:
         default: true
         type: boolean
       auto_restart_chain:
-        description: "Auto-Restart 24/7 (Otomatis nyalakan sesi RDP baru setelah backup selesai saat waktu habis)"
+        description: "Auto-Restart 24/7 (Otomatis nyalakan sesi RDP baru setelah backup selesai & Tailscale logout)"
         required: false
         default: false
         type: boolean
       install_game_runtimes:
-        description: "Install DirectX 9/10/11 Legacy + Visual C++ All-in-One (Wajib untuk kebanyakan game)"
+        description: "Install DirectX 9/10/11 Legacy + Smart VC++ Check (Wajib untuk kebanyakan game)"
         required: true
         default: true
         type: boolean
       install_mesa3d:
-        description: "Download Mesa3D Software GPU Renderer (Aktifkan jika game menolak jalan tanpa OpenGL/GPU)"
+        description: "Download Mesa3D Software GPU Renderer (Aktifkan hanya jika game menolak jalan tanpa OpenGL/GPU)"
         required: false
         default: false
         type: boolean
@@ -70,7 +76,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: s-rdp-tailscale-${{ github.ref }}
+  group: s-rdp-tailscale-${{ inputs.hostname || 'default' }}
   cancel-in-progress: false
 
 jobs:
@@ -139,7 +145,7 @@ jobs:
             -InstallGameRuntimes "$($env:INSTALL_RUNTIMES)".ToLower() `
             -InstallMesa3D "$($env:INSTALL_MESA)".ToLower()
 
-      - name: Pulihkan Data Permanen (Steam, Discord, & Vault AES-256)
+      - name: Pulihkan Data Permanen (Steam, Discord, & Atomic Vault AES-256)
         if: ${{ inputs.enable_vault_sync == true }}
         shell: pwsh
         env:
@@ -171,18 +177,22 @@ jobs:
           AUTO_CHAIN: ${{ inputs.auto_restart_chain }}
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) {
+            $tsCmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+            if ($tsCmd) { $tsExe = $tsCmd.Source }
+          }
           $tsIp = (& $tsExe ip -4 | Select-Object -First 1).Trim()
           $tsStatus = (& $tsExe status --json | ConvertFrom-Json)
           $dnsName = $tsStatus.Self.DNSName.TrimEnd('.')
 
           $freeC = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
           $freeD = if (Get-PSDrive D -ErrorAction SilentlyContinue) { [math]::Round((Get-PSDrive D).Free / 1GB, 1) } else { 0 }
-          $cpuObj = Get-CimInstance Win32_Processor | Select-Object -First 1
-          $cpuName = $cpuObj.Name.Trim()
-          $cpuCores = $cpuObj.NumberOfCores
-          $cpuThreads = $cpuObj.NumberOfLogicalProcessors
+          $cpuProcs = @(Get-CimInstance Win32_Processor)
+          $cpuName = $cpuProcs[0].Name.Trim()
+          $cpuCores = ($cpuProcs | Measure-Object -Property NumberOfCores -Sum).Sum
+          $cpuThreads = ($cpuProcs | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $osRamGb = [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize / 1MB, 1)
-          $vaultRoot = if (Test-Path "C:\Windows\Temp\s-rdp-vault-root.txt") { (Get-Content "C:\Windows\Temp\s-rdp-vault-root.txt" -Raw).Trim() } else { "Nonaktif" }
+          $vaultRoot = if (Test-Path "C:\ProgramData\S-RDP\vault-root.txt") { (Get-Content "C:\ProgramData\S-RDP\vault-root.txt" -Raw).Trim() } else { "Nonaktif" }
 
           Write-Host ""
           Write-Host "================================================================" -ForegroundColor Green
@@ -192,25 +202,24 @@ jobs:
           if ($dnsName) {
             Write-Host " MagicDNS Hostname   : $dnsName" -ForegroundColor Yellow
           }
-          Write-Host " Port RDP            : 3389"
+          Write-Host " Port RDP            : 3389 (60 FPS + AVC444 Unlocked)"
           Write-Host " Username            : $($env:RDP_USER)" -ForegroundColor Cyan
           Write-Host " Password            : (Sesuai Secret RDP_PASSWORD kamu)" -ForegroundColor Cyan
           Write-Host " Hardware Runner     : $cpuName ($cpuCores Cores / $cpuThreads vCPU Threads) | $osRamGb GB RAM"
-          Write-Host " Folder Anti-Reset   : $vaultRoot (Otomatis di-backup AES-256 saat sesi berakhir)" -ForegroundColor Green
+          Write-Host " Folder Anti-Reset   : $vaultRoot (Atomic AES-256 Auto-Backup)" -ForegroundColor Green
           Write-Host " Auto-Restart 24/7   : $($env:AUTO_CHAIN)"
           Write-Host " Sisa Disk Space     : C: $freeC GB | D: $freeD GB (+ 20 GB Virtual Pagefile)"
-          Write-Host " Durasi Maksimal     : $($env:DURATION) menit"
+          Write-Host " Durasi Sesi         : $($env:DURATION) menit"
           Write-Host "----------------------------------------------------------------"
           Write-Host " PENTING UNTUK AFK GAME & ANTI-RESET:" -ForegroundColor Magenta
-          Write-Host " 1. Install game/bot di dalam '$vaultRoot' (atau lewat Steam di Desktop)"
-          Write-Host "    agar TIDAK HILANG & TIDAK PERLU DOWNLOAD ULANG tiap 6 jam!"
-          Write-Host " 2. Saat mau tutup aplikasi RDP dan tinggal AFK, klik 2x"
-          Write-Host "    'AFK-Disconnect-Tanpa-Freeze.bat' di Desktop RDP!"
+          Write-Host " 1. Gunakan resolusi RDP 1280x720 agar posisi klik auto-clicker"
+          Write-Host "    sama persis 100% dengan layar Console AFK!"
+          Write-Host " 2. Saat mau tutup RDP & tinggal AFK, klik 2x"
+          Write-Host "    'AFK-Disconnect-Tanpa-Freeze.bat' di Desktop!"
           Write-Host "================================================================" -ForegroundColor Green
 
-          # Tulis ringkasan rapi ke GitHub Actions Job Summary
           $summaryLines = @(
-            "## 🎮 S-RDP (AFK Gaming Edition + Anti-Reset Vault) Siap Digunakan!",
+            "## 🎮 S-RDP (Audited AFK Gaming + Atomic Vault) Siap Digunakan!",
             "",
             "| Parameter | Detail Koneksi |",
             "| :--- | :--- |",
@@ -219,20 +228,21 @@ jobs:
             "| **Username** | ``$($env:RDP_USER)`` |",
             "| **Password** | Sesuai GitHub Secret ``RDP_PASSWORD`` |",
             "| **Spesifikasi Mesin** | ``$cpuName`` (**$cpuCores Cores / $cpuThreads vCPU Threads**, **$osRamGb GB RAM + 20 GB Pagefile**) |",
-            "| **Folder Anti-Reset** | ``$vaultRoot`` *(Terenkripsi AES-256 otomatis ke GitHub Release ``s-rdp-vault``)* |",
+            "| **Folder Anti-Reset** | ``$vaultRoot`` *(Atomic AES-256 Backup ke GitHub Release ``s-rdp-vault``)* |",
+            "| **Resolusi Console AFK** | ``1280x720 @ 100% DPI`` *(Samakan resolusi aplikasi RDP ke 1280x720 untuk Auto-Clicker)* |",
             "| **Auto-Restart 24/7** | ``$($env:AUTO_CHAIN)`` |",
             "| **Kapasitas Kosong** | ``C:\`` **$freeC GB** / ``D:\`` **$freeD GB** |",
             "| **Batas Waktu** | **$($env:DURATION) Menit** |",
             "",
-            "### 💾 Cara Kerja Anti-Reset 6 Jam (Steam, Discord, & Game)",
-            "- **Steam & Discord** sudah disiapkan di Desktop. Saat pertama kali login Steam, centang **Remember Me**.",
-            "- Simpan/install semua game atau bot kamu di dalam **``$vaultRoot``** (buka shortcut **``Folder-Permanen-Anti-Reset``** di Desktop).",
-            "- Saat durasi habis atau kamu klik **``Matikan-Server-RDP.bat``** (bisa juga kapan saja lewat **``Simpan-Data-Sekarang.bat``**), seluruh isi ``$vaultRoot``, sesi login Steam, dan AppData Discord otomatis dienkripsi AES-256 lalu disimpan untuk sesi berikutnya!",
-            "- **PENTING:** Jangan klik tombol **Cancel workflow** paksa dari GitHub kalau kamu mau datanya ke-save dengan mulus — gunakan **``Matikan-Server-RDP.bat``** di Desktop agar step Auto-Backup berjalan dulu."
+            "### 💾 Panduan Anti-Reset & AFK Tanpa Freeze",
+            "- **Steam & Discord** siap di Desktop (menggunakan *Instant NTFS Junction* — tidak makan ruang ganda & bebas profil korup).",
+            "- Simpan semua game/bot di dalam **``$vaultRoot``** (klik shortcut **``Folder-Permanen-Anti-Reset``** di Desktop).",
+            "- Klik 2x **``AFK-Disconnect-Tanpa-Freeze.bat``** saat ingin menutup RDP agar game tetap jalan 100%.",
+            "- Klik 2x **``Simpan-Data-Sekarang.bat``** kapan saja untuk live-save tanpa menutup game, atau **``Matikan-Server-RDP.bat``** saat selesai."
           )
           ($summaryLines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: Menjaga Sesi AFK Tetap Hidup (Monitoring & Live Manual Save Loop)
+      - name: Menjaga Sesi AFK Tetap Hidup (Zero-Overhead Loop + In-RDP Warnings)
         shell: pwsh
         env:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
@@ -242,38 +252,62 @@ jobs:
           VAULT_ENABLED: ${{ inputs.enable_vault_sync }}
         run: |
           $maxMinutes = [int]$env:DURATION_MINUTES
-          if ($maxMinutes -gt 340) { $maxMinutes = 340 }
+          if ($maxMinutes -gt 330) { $maxMinutes = 330 }
           if ($maxMinutes -lt 5) { $maxMinutes = 5 }
 
           $endTime = (Get-Date).AddMinutes($maxMinutes)
-          Write-Host "Sesi RDP akan dijaga tetap hidup hingga $($endTime.ToString('HH:mm:ss')) UTC ($maxMinutes menit)..." -ForegroundColor Cyan
+          $lastTelemetry = (Get-Date).AddMinutes(-10)
+          $warned10Min = $false
+          $warned3Min  = $false
+
+          Write-Host "Sesi RDP dijaga tetap hidup hingga $($endTime.ToString('HH:mm:ss')) UTC ($maxMinutes menit)..." -ForegroundColor Cyan
 
           while ((Get-Date) -lt $endTime) {
+            # Fast 5-second flag check (zero WMI CPU overhead!) so Desktop buttons respond almost instantly
             if (Test-Path "C:\stop-s-rdp.flag") {
-              Write-Host "Menerima sinyal stop dari Desktop (Matikan-Server-RDP.bat). Lanjut ke proses Auto-Backup & Shutdown..." -ForegroundColor Yellow
+              Write-Host "Menerima sinyal stop dari Desktop (Matikan-Server-RDP.bat). Lanjut ke Atomic Auto-Backup & Shutdown..." -ForegroundColor Yellow
               break
             }
 
             if ((Test-Path "C:\save-s-rdp-now.flag") -and ($env:VAULT_ENABLED -eq "true")) {
-              Remove-Item "C:\save-s-rdp.now.flag" -Force -ErrorAction SilentlyContinue
               Remove-Item "C:\save-s-rdp-now.flag" -Force -ErrorAction SilentlyContinue
-              Write-Host "[MANUAL SAVE] Menyimpan snapshot Vault di tengah sesi..." -ForegroundColor Green
-              & .\scripts\sync-vault.ps1 -Mode "backup" -VaultPassword $env:VAULT_PASS -RdpUser $env:SETUP_USER
+              Write-Host "[LIVE SNAPSHOT] Menyimpan snapshot Vault di tengah sesi tanpa menutup game..." -ForegroundColor Green
+              & .\scripts\sync-vault.ps1 `
+                -Mode "backup" `
+                -VaultPassword $env:VAULT_PASS `
+                -RdpUser $env:SETUP_USER `
+                -IsLiveSnapshot "true"
             }
 
-            $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 0)
-            $cpuLoad = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-            $osInfo = Get-CimInstance Win32_OperatingSystem
-            $usedRamGb = [math]::Round(($osInfo.TotalVisibleMemorySize - $osInfo.FreePhysicalMemory) / 1MB, 1)
-            $totalRamGb = [math]::Round($osInfo.TotalVisibleMemorySize / 1MB, 1)
+            $remTotalMin = ($endTime - (Get-Date)).TotalMinutes
 
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Status AFK Aktif | Sisa Waktu: $remaining mnt | CPU: $cpuLoad% | RAM: $usedRamGb / $totalRamGb GB"
-            Start-Sleep -Seconds 30
+            # Pop-up notification inside RDP 10 minutes & 3 minutes before timer expires so active users aren't surprised!
+            if (-not $warned10Min -and $remTotalMin -le 10 -and $remTotalMin -gt 4) {
+              $warned10Min = $true
+              & msg.exe * /TIME:30 "Info S-RDP: Sesi 6 jam akan berakhir dalam 10 menit. Seluruh data Steam, Discord, & Folder Permanen akan otomatis di-backup!" 2>$null
+            }
+            if (-not $warned3Min -and $remTotalMin -le 3) {
+              $warned3Min = $true
+              & msg.exe * /TIME:30 "Peringatan S-RDP: Sesi berakhir dalam 3 menit. Bersiap melakukan Auto-Backup AES-256!" 2>$null
+            }
+
+            # Query WMI CPU/RAM telemetry only once every 5 minutes to eliminate WmiPrvSE.exe CPU spikes during AFK gaming!
+            if (((Get-Date) - $lastTelemetry).TotalMinutes -ge 5) {
+              $lastTelemetry = Get-Date
+              $remaining = [math]::Round($remTotalMin, 0)
+              $cpuLoad = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+              $osInfo = Get-CimInstance Win32_OperatingSystem
+              $usedRamGb = [math]::Round(($osInfo.TotalVisibleMemorySize - $osInfo.FreePhysicalMemory) / 1MB, 1)
+              $totalRamGb = [math]::Round($osInfo.TotalVisibleMemorySize / 1MB, 1)
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Status AFK Aktif | Sisa Waktu: $remaining mnt | CPU: $cpuLoad% | RAM: $usedRamGb / $totalRamGb GB"
+            }
+
+            Start-Sleep -Seconds 5
           }
 
-          Write-Host "Durasi sesi selesai. Memulai penyimpanan otomatis sebelum mesin mati..." -ForegroundColor Green
+          Write-Host "Durasi sesi selesai. Memulai penyimpanan Atomic Vault sebelum mesin mati..." -ForegroundColor Green
 
-      - name: Auto-Backup Data Permanen ke Encrypted Vault (AES-256)
+      - name: Atomic Auto-Backup Data Permanen ke Encrypted Vault (AES-256)
         if: ${{ !cancelled() && inputs.enable_vault_sync == true }}
         shell: pwsh
         env:
@@ -281,32 +315,32 @@ jobs:
           VAULT_PASS: ${{ secrets.VAULT_PASSWORD || secrets.RDP_PASSWORD }}
           SETUP_USER: ${{ inputs.rdp_user }}
         run: |
-          if (-not (Test-Path "C:\Windows\Temp\s-rdp-vault-root.txt")) {
+          if (-not (Test-Path "C:\ProgramData\S-RDP\vault-root.txt")) {
             Write-Host "Vault belum diinisialisasi pada sesi ini, melewati backup."
             exit 0
           }
           & .\scripts\sync-vault.ps1 `
             -Mode "backup" `
             -VaultPassword $env:VAULT_PASS `
-            -RdpUser $env:SETUP_USER
+            -RdpUser $env:SETUP_USER `
+            -IsLiveSnapshot "false"
 
-      - name: Logout Tailscale Node (Cleanup)
+      - name: Logout Tailscale Node (Cleanup Sebelum Estafet)
         if: always()
         shell: pwsh
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
           if (Test-Path $tsExe) {
-            Write-Host "Memutuskan node dari Tailscale agar daftar perangkat tetap bersih..."
+            Write-Host "Memutuskan node dari Tailscale agar hostname '${{ inputs.hostname }}' bebas bentrok (-1)..."
             & $tsExe logout 2>$null
           }
 
       - name: Auto-Restart Sesi RDP Berikutnya (Continuous 24/7 Chain)
-        if: ${{ inputs.auto_restart_chain == true }}
+        if: ${{ !cancelled() && inputs.auto_restart_chain == true }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
         run: |
-          # Jangan auto-restart jika user sengaja mematikan manual lewat Matikan-Server-RDP.bat
           if (Test-Path "C:\stop-s-rdp.flag") {
             Write-Host "Sesi dimatikan manual oleh pengguna — Auto-Restart dilewati." -ForegroundColor Yellow
             exit 0
@@ -326,5 +360,5 @@ jobs:
             -f install_mesa3d="${{ inputs.install_mesa3d }}" `
             -f cleanup_sdk_space="${{ inputs.cleanup_sdk_space }}"
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Untuk mengaktifkan estafet tanpa batas (Auto-Restart 24/7), GitHub mewajibkan Personal Access Token di secret 'PAT_TOKEN' (karena GITHUB_TOKEN standar dicegah memicu workflow berulang oleh GitHub)."
+            Write-Warning "Untuk estafet berantai tanpa batas (>2 sesi berturut-turut), tambahkan Classic Personal Access Token (scope: repo, workflow) ke secret 'PAT_TOKEN' karena GITHUB_TOKEN standar dibatasi oleh aturan anti-loop GitHub."
           }

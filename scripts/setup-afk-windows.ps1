@@ -2,14 +2,14 @@
 .SYNOPSIS
     Optimizes Windows Server GitHub Actions Runner for Maximum Zero-Cost AFK Gaming Performance.
 .DESCRIPTION
-    - Unparks all CPU cores/threads & locks Ultimate Performance 100% Boost Clock (3.24+ GHz EPYC)
-    - Eliminates the ~70% startup CPU hog on GitHub Runners (disables Windows Defender MsMpEng, .NET NGEN mscorsvw, TiWorker, CompatTelRunner)
-    - Expands NVMe/SSD Pagefile (Virtual Memory) to 20 GB & enables Large System / NTFS fast I/O cache
-    - Unlocks RDP 60 FPS cap (DWMFRAMEINTERVAL = 15) + H.264/AVC444 & UDP low-latency transport
-    - Applies MMCSS Gaming Priority, DirectX WARP/Shader optimizations, & TCP NoDelay (Nagle off)
-    - Registers Native Auto-RAM Cleaner + Auto-Game CPU Priority Booster (Zero third-party bloatware)
-    - Disables TestSigning flag for next boot / clears watermark policies where possible & enables Windows Audio sink
-    - Configures Console AutoLogon & Desktop helper scripts (AFK tscon handover + Graceful Stop)
+    - Eliminates ~70% startup CPU hogs (Defender Real-Time Scan, .NET NGEN mscorsvw, TiWorker, CompatTelRunner, recursive scheduled tasks)
+    - Unparks 100% CPU cores/threads & locks Ultimate Performance Boost Clock (3.24+ GHz AMD EPYC)
+    - Expands Virtual Memory (20 GB Pagefile) & enables fast NTFS I/O caching
+    - Injects Visual Effects, GameDVR-Off, & 100% DPI Scaling directly into Default User Registry Hive (NTUSER.DAT) so the RDP gamer account inherits them cleanly without corrupting C:\Users\<user>
+    - Locks Hyper-V / Console Display Resolution & 96 DPI (100% scaling) so macro/auto-clicker coordinates don't drift on tscon AFK handover
+    - Unlocks RDP 60 FPS cap (DWMFRAMEINTERVAL = 15) + H.264/AVC444 & UDP low-latency transport + Windows Audio sink
+    - Smart runtime installer: skips VC++ download if modern 14.40+ runtime is already pre-installed on runner (saves ~25s startup!)
+    - Registers Native AFK Guardian (keeps hogs dead, boosts active game priority, trims memory leaks >78%)
 #>
 
 param(
@@ -29,7 +29,6 @@ param(
 $ErrorActionPreference = "Continue"
 
 Write-Host "==> [1/10] Killing 70% Background CPU Hogs (Defender, .NET NGEN, Telemetry, Update Workers)..." -ForegroundColor Cyan
-# 1. Disable Windows Defender Real-Time Scanning & Scheduled Scans (Biggest CPU hog on Windows Server 2022/2025 runners)
 try {
     Set-MpPreference -DisableRealtimeMonitoring $true `
                      -DisableBehaviorMonitoring $true `
@@ -54,7 +53,7 @@ foreach ($prop in @("DisableRealtimeMonitoring", "DisableBehaviorMonitoring", "D
     Set-ItemProperty -Path $DefenderRtPolicy -Name $prop -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 }
 
-# 2. Stop .NET Runtime Optimization Service (mscorsvw.exe / ngen) & Maintenance Tasks that eat 50-70% CPU on fresh GitHub VMs
+# Stop .NET Runtime Optimization Service (mscorsvw.exe / ngen) & heavy background services
 Get-Service -Name "clr_optimization_*" -ErrorAction SilentlyContinue | ForEach-Object {
     Stop-Service -Name $_.Name -Force -ErrorAction SilentlyContinue
     Set-Service -Name $_.Name -StartupType Disabled -ErrorAction SilentlyContinue
@@ -71,26 +70,29 @@ foreach ($svc in $HeavyServices) {
     }
 }
 
-# Kill active CPU-stealing background processes immediately
 $CpuHogProcesses = @("mscorsvw", "ngen", "ngentask", "CompatTelRunner", "TiWorker", "TrustedInstaller", "MpCmdRun", "NisSrv")
 foreach ($proc in $CpuHogProcesses) {
     Get-Process -Name $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
-# Disable Scheduled Tasks that trigger CPU spikes mid-AFK
-$NoisyTasks = @(
-    "\Microsoft\Windows\.NET Framework\.NET Framework NGEN v4.0.30319*",
+# Properly disable noisy Scheduled Tasks recursively via wildcard TaskPath matching
+$NoisyTaskRoots = @(
+    "\Microsoft\Windows\.NET Framework\*",
     "\Microsoft\Windows\Application Experience\*",
     "\Microsoft\Windows\Customer Experience Improvement Program\*",
     "\Microsoft\Windows\Defrag\*",
     "\Microsoft\Windows\DiskDiagnostic\*",
-    "\Microsoft\Windows\Maintenance\WinSAT",
-    "\Microsoft\Windows\Windows Defender\*"
+    "\Microsoft\Windows\Maintenance\*",
+    "\Microsoft\Windows\Windows Defender\*",
+    "\Microsoft\Windows\WindowsUpdate\*"
 )
-foreach ($taskPattern in $NoisyTasks) {
-    Get-ScheduledTask -TaskPath ($taskPattern.Substring(0, $taskPattern.LastIndexOf('\') + 1)) -ErrorAction SilentlyContinue |
-        Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
-}
+Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+    $tp = $_.TaskPath
+    foreach ($pat in $NoisyTaskRoots) {
+        if ($tp -like $pat) { return $true }
+    }
+    return $false
+} | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
 
 Write-Host "==> [2/10] Activating Ultimate Performance Plan & Unparking 100% CPU Cores/Threads..." -ForegroundColor Cyan
 $ultPlan = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null
@@ -106,7 +108,6 @@ powercfg /change standby-timeout-dc 0
 powercfg /change hibernate-timeout-ac 0
 powercfg /change hibernate-timeout-dc 0
 
-# Unpark ALL CPU Cores (CPMINCORES = 100%) & Lock Boost Clock State to 100% (3.24+ GHz sustained)
 powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 2>$null
 powercfg -setacvalueindex scheme_current sub_processor CPMAXCORES 100 2>$null
 powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 2>$null
@@ -121,9 +122,11 @@ try {
     if ($cs.AutomaticManagedPagefile) {
         Set-CimInstance -InputObject $cs -Property @{AutomaticManagedPagefile = $false} -ErrorAction SilentlyContinue | Out-Null
     }
+    # Place Pagefile on C: if D: is reserved for large AFK-Data Vault, unless C: is tight (<15GB) and D: has >35GB
     $targetDrive = "C:"
+    $cDrive = Get-PSDrive -Name C -ErrorAction SilentlyContinue
     $dDrive = Get-PSDrive -Name D -ErrorAction SilentlyContinue
-    if ($dDrive -and ($dDrive.Free / 1GB) -gt 30) {
+    if ($cDrive -and ($cDrive.Free / 1GB) -lt 22 -and $dDrive -and ($dDrive.Free / 1GB) -gt 35) {
         $targetDrive = "D:"
     }
     $pfPath = "$targetDrive\pagefile.sys"
@@ -138,7 +141,6 @@ try {
     Write-Warning "    Pagefile tuning note: $_"
 }
 
-# NTFS & Storage I/O Speedup (Reduces disk stutter on virtualized SAS/SSD drives reported by Hyper-V)
 fsutil behavior set disablelastaccess 1 | Out-Null
 fsutil behavior set disable8dot3 1 | Out-Null
 fsutil behavior set memoryusage 2 | Out-Null
@@ -146,11 +148,11 @@ $MemMgmt = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Manage
 Set-ItemProperty -Path $MemMgmt -Name "LargeSystemCache" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $MemMgmt -Name "DisablePagingExecutive" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 
-Write-Host "==> [4/10] Tuning CPU Scheduler, DirectX WARP Software Renderer & Network Ping..." -ForegroundColor Cyan
+Write-Host "==> [4/10] Tuning CPU Scheduler, DirectX WARP, Network Ping & Default User Hive..." -ForegroundColor Cyan
 Get-ScheduledTask -TaskName "ServerManager" -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
 New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -PropertyType DWORD -Force | Out-Null
 
-# Favor Foreground Applications (Win32PrioritySeparation = 38 / 0x26 = Short Quantum, High Foreground Boost for Games)
+# Favor Foreground Applications (Win32PrioritySeparation = 38 / 0x26)
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 38 -Type DWord -Force
 
 # Multimedia Class Scheduler Service (MMCSS) — 0% Background Reserve, Max Priority for Games
@@ -167,13 +169,13 @@ Set-ItemProperty -Path $GamesTaskPath -Name "Scheduling Category" -Value "High" 
 Set-ItemProperty -Path $GamesTaskPath -Name "SFIO Priority" -Value "High" -Type String -Force
 Set-ItemProperty -Path $GamesTaskPath -Name "Background Only" -Value "False" -Type String -Force
 
-# DirectX / DXGI Software & WARP Rendering Latency Tweaks (Crucial for CPU-based rendering on EPYC AVX2)
+# DirectX / DXGI Software & WARP Rendering Latency Tweaks
 $DxGraphicsDrivers = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
 Set-ItemProperty -Path $DxGraphicsDrivers -Name "TdrLevel" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $DxGraphicsDrivers -Name "TdrDelay" -Value 60 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $DxGraphicsDrivers -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
 
-# Disable Nagle's Algorithm (TCP NoDelay & TcpAckFrequency = 1) + Receive Side Scaling (RSS) for Online Games
+# Disable Nagle's Algorithm (TCP NoDelay & TcpAckFrequency = 1) + RSS
 netsh int tcp set global rss=enabled autotuninglevel=normal ecncapability=disabled timestamps=disabled 2>$null | Out-Null
 $InterfacesPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
 Get-ChildItem $InterfacesPath -ErrorAction SilentlyContinue | ForEach-Object {
@@ -181,21 +183,43 @@ Get-ChildItem $InterfacesPath -ErrorAction SilentlyContinue | ForEach-Object {
     Set-ItemProperty -Path $_.PSPath -Name "TCPNoDelay" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 }
 
-# Disable GameDVR, Xbox Bar, Error Reporting & Visual Bloat
-$GameConfigPath = "HKCU:\System\GameConfigStore"
-if (-not (Test-Path $GameConfigPath)) { New-Item -Path $GameConfigPath -Force | Out-Null }
-Set-ItemProperty -Path $GameConfigPath -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force
+# Machine-wide GameDVR Off Policy
 $GameDvrPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR"
 if (-not (Test-Path $GameDvrPolicy)) { New-Item -Path $GameDvrPolicy -Force | Out-Null }
 Set-ItemProperty -Path $GameDvrPolicy -Name "AllowGameDVR" -Value 0 -Type DWord -Force
 
-$VisualFxPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
-if (-not (Test-Path $VisualFxPath)) { New-Item -Path $VisualFxPath -Force | Out-Null }
-Set-ItemProperty -Path $VisualFxPath -Name "VisualFXSetting" -Value 2 -Type DWord -Force
+# Lock Console Display Resolution to 1280x720 & 100% DPI (96 DPI) on BasicRender/Hyper-V Video so tscon AFK handover keeps stable macro coordinates!
+Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Control\Video" -ErrorAction SilentlyContinue | ForEach-Object {
+    $vid0000 = Join-Path $_.PSPath "0000"
+    if (Test-Path $vid0000) {
+        Set-ItemProperty -Path $vid0000 -Name "DefaultSettings.XResolution" -Value 1280 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $vid0000 -Name "DefaultSettings.YResolution" -Value 720 -Type DWord -Force -ErrorAction SilentlyContinue
+    }
+}
 
-# Turn off BCD TestSigning flag where supported (helps games sensitive to Test Mode check)
+# Inject Best Performance Visual Effects, 100% DPI Scaling (LogPixels=96), & GameDVR Off into Default User Hive (NTUSER.DAT)
+# This ensures the newly created '$RdpUser' account actually receives all per-user tweaks upon first RDP logon without pre-creating C:\Users\$RdpUser!
+$DefaultNtUser = "C:\Users\Default\NTUSER.DAT"
+if (Test-Path $DefaultNtUser) {
+    & reg load "HKU\SrdpDefault" $DefaultNtUser >$null 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        & reg add "HKU\SrdpDefault\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v Win8DpiScaling /t REG_DWORD /d 1 /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v LogPixels /t REG_DWORD /d 96 /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop\WindowMetrics" /v MinAnimate /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\System\GameConfigStore" /v GameDVR_Enabled /t REG_DWORD /d 0 /f >$null 2>&1
+        [System.GC]::Collect()
+        Start-Sleep -Milliseconds 300
+        & reg unload "HKU\SrdpDefault" >$null 2>&1
+    }
+}
+
 bcdedit /set testsigning off 2>$null | Out-Null
 bcdedit /set disabledynamictick yes 2>$null | Out-Null
+bcdedit /deletevalue numproc 2>$null | Out-Null
+bcdedit /deletevalue truncatememory 2>$null | Out-Null
 
 Write-Host "==> [5/10] Unlocking RDP 60 FPS, H.264/AVC444 & Enabling Audio Sink..." -ForegroundColor Cyan
 $DwmWinStation = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations"
@@ -225,28 +249,34 @@ Set-ItemProperty -Path $RdpWinStation -Name "MaxDisconnectionTime" -Value 0 -Typ
 Set-ItemProperty -Path $RdpWinStation -Name "MaxIdleTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $RdpWinStation -Name "MaxConnectionTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 
-Write-Host "==> [6/10] Registering Native Auto-RAM Cleaner & Game Process Priority Booster..." -ForegroundColor Cyan
-$SysScriptsDir = "C:\Windows\Temp\S-RDP"
+Write-Host "==> [6/10] Registering Native AFK Guardian (CPU Hog Killer + Game Priority Booster + RAM Cleaner)..." -ForegroundColor Cyan
+$SysScriptsDir = "C:\ProgramData\S-RDP"
 New-Item -ItemType Directory -Path $SysScriptsDir -Force | Out-Null
 
-# Runs silently every 5 minutes:
-# 1) Kills any newly spawned .NET/Telemetry CPU hogs
-# 2) Boosts active windowed/GUI user games to High/AboveNormal priority
-# 3) Trims background working sets if RAM > 78%
 $OptimizerLoopPs1 = @'
 $ErrorActionPreference = "SilentlyContinue"
 
 # 1. Keep CPU hogs dead
-foreach ($hog in @("mscorsvw", "ngen", "CompatTelRunner", "TiWorker")) {
+foreach ($hog in @("mscorsvw", "ngen", "ngentask", "CompatTelRunner", "TiWorker", "MpCmdRun")) {
     Get-Process -Name $hog | Stop-Process -Force
 }
 
-# 2. Auto-Boost active user GUI applications (Games) & deprioritize noisy system background workers
-$systemIgnore = @("explorer", "taskmgr", "cmd", "powershell", "pwsh", "conhost", "dwm", "csrss", "winlogon", "svchost", "lsass", "services", "tailscaled", "tailscale-ipn", "rdpclip", "sihost", "ctfmon", "TextInputHost", "ShellExperienceHost", "SearchHost", "StartMenuExperienceHost")
+# 2. Auto-Boost active user GUI applications (Games) & force ALL Logical Processors (Full Multi-Core Affinity Mask)
+$logicalCount = [Environment]::ProcessorCount
+$fullAffinityMask = if ($logicalCount -ge 64) { [IntPtr]::new(-1) } else { [IntPtr]::new(([int64]1 -shl $logicalCount) - 1) }
+
+$systemIgnore = @(
+    "explorer", "taskmgr", "cmd", "powershell", "pwsh", "conhost", "dwm", "csrss", "winlogon",
+    "svchost", "lsass", "services", "tailscaled", "tailscale-ipn", "rdpclip", "sihost", "ctfmon",
+    "TextInputHost", "ShellExperienceHost", "SearchHost", "StartMenuExperienceHost",
+    "steamwebhelper", "Discord"
+)
 Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($systemIgnore -notcontains $_.ProcessName) } | ForEach-Object {
     if ($_.PriorityClass -eq "Normal") {
         $_.PriorityClass = "AboveNormal"
     }
+    # Unlock full vCPU thread affinity in case a 32-bit/legacy game locked itself to 1-2 cores!
+    $_.ProcessorAffinity = $fullAffinityMask
 }
 
 # 3. Trim leaked background RAM if total memory > 78%
@@ -275,7 +305,7 @@ $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -Repetiti
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName "S-RDP-AfkGuardian" -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null
 
-Write-Host "==> [7/10] Configuring User Account & Console Auto-Logon for AFK Persistence..." -ForegroundColor Cyan
+Write-Host "==> [7/10] Configuring User Account & Console Auto-Logon..." -ForegroundColor Cyan
 $SecurePass = ConvertTo-SecureString $RdpPassword -AsPlainText -Force
 if (Get-LocalUser -Name $RdpUser -ErrorAction SilentlyContinue) {
     Set-LocalUser -Name $RdpUser -Password $SecurePass -PasswordNeverExpires $true
@@ -302,36 +332,53 @@ Set-ItemProperty -Path $RdpWinStation -Name "UserAuthentication" -Value 0 -Type 
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 Restart-Service -Name "TermService" -Force -ErrorAction SilentlyContinue
 
-Write-Host "==> [8/10] Cleaning Temp Files on C: Drive..." -ForegroundColor Cyan
+Write-Host "==> [8/10] Cleaning Runner Temp Files..." -ForegroundColor Cyan
 Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($InstallGameRuntimes -eq "true") {
-    Write-Host "==> [9/10] Installing Gaming Runtimes (DirectX 9/10/11 Legacy + VC++ Redistributables)..." -ForegroundColor Cyan
-    try {
-        $dxDir = "$env:TEMP\dxruntime"
-        New-Item -ItemType Directory -Path $dxDir -Force | Out-Null
-        $dxUrl = "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe"
-        $dxExe = "$dxDir\directx_redist.exe"
-        Invoke-WebRequest -Uri $dxUrl -OutFile $dxExe -UseBasicParsing
-        Start-Process -FilePath $dxExe -ArgumentList "/Q /T:`"$dxDir\extracted`"" -Wait
-        Start-Process -FilePath "$dxDir\extracted\DXSETUP.exe" -ArgumentList "/silent" -Wait
-        Remove-Item -Path $dxDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "    DirectX Legacy Runtimes installed successfully." -ForegroundColor Green
-    } catch {
-        Write-Warning "    Could not install DirectX Legacy Runtime: $_"
+    Write-Host "==> [9/10] Checking & Installing Gaming Runtimes (DirectX 9/10/11 Legacy + Smart VC++ Check)..." -ForegroundColor Cyan
+    # DirectX Legacy (June 2010 d3dx9_43.dll / xinput1_3.dll / d3dcompiler_43.dll — NOT pre-installed on Windows Server!)
+    if (-not (Test-Path "$env:SystemRoot\System32\d3dx9_43.dll")) {
+        try {
+            $dxDir = "$env:TEMP\dxruntime"
+            New-Item -ItemType Directory -Path $dxDir -Force | Out-Null
+            $dxUrl = "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe"
+            $dxExe = "$dxDir\directx_redist.exe"
+            Invoke-WebRequest -Uri $dxUrl -OutFile $dxExe -UseBasicParsing
+            Start-Process -FilePath $dxExe -ArgumentList "/Q /T:`"$dxDir\extracted`"" -Wait
+            Start-Process -FilePath "$dxDir\extracted\DXSETUP.exe" -ArgumentList "/silent" -Wait
+            Remove-Item -Path $dxDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "    DirectX Legacy Runtimes installed successfully." -ForegroundColor Green
+        } catch {
+            Write-Warning "    Could not install DirectX Legacy Runtime: $_"
+        }
+    } else {
+        Write-Host "    DirectX Legacy Runtimes already present — skipped." -ForegroundColor Green
     }
 
-    try {
-        $vcX64 = "$env:TEMP\vc_redist.x64.exe"
-        $vcX86 = "$env:TEMP\vc_redist.x86.exe"
-        Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcX64 -UseBasicParsing
-        Start-Process -FilePath $vcX64 -ArgumentList "/install /quiet /norestart" -Wait
-        Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x86.exe" -OutFile $vcX86 -UseBasicParsing
-        Start-Process -FilePath $vcX86 -ArgumentList "/install /quiet /norestart" -Wait
-        Remove-Item $vcX64, $vcX86 -Force -ErrorAction SilentlyContinue
-        Write-Host "    Visual C++ x64 & x86 Runtimes installed successfully." -ForegroundColor Green
-    } catch {
-        Write-Warning "    Could not install VC++ Redistributable: $_"
+    # Smart VC++ Check: GitHub Actions Windows images pre-install modern VC++ 14.x (both x64 & x86). Skip redundant download if both exist!
+    $vc64Installed = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" -ErrorAction SilentlyContinue).Installed -eq 1
+    $vc86Installed = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86" -ErrorAction SilentlyContinue).Installed -eq 1
+    if ($vc64Installed -and $vc86Installed) {
+        Write-Host "    Visual C++ 2015-2022 (x64 & x86) already pre-installed on runner — skipped (saved ~20s)!" -ForegroundColor Green
+    } else {
+        try {
+            if (-not $vc64Installed) {
+                $vcX64 = "$env:TEMP\vc_redist.x64.exe"
+                Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcX64 -UseBasicParsing
+                Start-Process -FilePath $vcX64 -ArgumentList "/install /quiet /norestart" -Wait
+                Remove-Item $vcX64 -Force -ErrorAction SilentlyContinue
+            }
+            if (-not $vc86Installed) {
+                $vcX86 = "$env:TEMP\vc_redist.x86.exe"
+                Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x86.exe" -OutFile $vcX86 -UseBasicParsing
+                Start-Process -FilePath $vcX86 -ArgumentList "/install /quiet /norestart" -Wait
+                Remove-Item $vcX86 -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host "    Visual C++ Runtimes installed successfully." -ForegroundColor Green
+        } catch {
+            Write-Warning "    Could not install VC++ Redistributable: $_"
+        }
     }
 } else {
     Write-Host "==> [9/10] Skipping Gaming Runtimes installation (disabled by input)." -ForegroundColor Yellow
@@ -356,7 +403,7 @@ if ($InstallMesa3D -eq "true") {
     }
 }
 
-# Re-sweep any .NET NGEN processes triggered after VC++ installation so CPU drops immediately to ~1-3%
+# Final sweep of any .NET NGEN / Windows Installer workers spawned during setup
 foreach ($proc in @("mscorsvw", "ngen", "ngentask", "TiWorker")) {
     Get-Process -Name $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
@@ -367,7 +414,6 @@ $PublicDesktop = "C:\Users\Public\Desktop"
 $KeepAliveBat = @'
 @echo off
 title AFK Mode - Disconnect Without Freezing Game
-:: Auto-elevate to Administrator (required by tscon)
 net session >nul 2>&1
 if %errorLevel% neq 0 (
     powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
@@ -378,16 +424,14 @@ echo   MENGAKTIFKAN MODE AFK (TETAP JALAN SAAT TUTUP RDP)
 echo ========================================================
 echo.
 echo Koneksi RDP kamu akan terputus dalam 3 detik, TAPI layar
-echo game, auto-clicker, dan macro akan dipindahkan ke Console
-echo sehingga TIDAK FREEZE / PAUSE di belakang layar!
+echo game, auto-clicker, dan macro dipindahkan ke Console aktif
+echo (1280x720 @ 100%% DPI) sehingga TIDAK FREEZE di background!
+echo.
+echo TIPS: Gunakan RDP dengan resolusi 1280x720 agar posisi klik
+echo auto-clicker 100%% sama persis saat ditinggal AFK!
 echo.
 timeout /t 3 >nul
-for /f "skip=1 tokens=2,3" %%a in ('query session %USERNAME%') do (
-    if "%%a"=="%USERNAME%" (
-        %windir%\System32\tscon.exe %%b /dest:console
-    )
-)
-for /f "tokens=3" %%s in ('query session ^| findstr /C:"Active"') do (
+for /f "tokens=3" %%s in ('query session ^| findstr /R /C:" Active "') do (
     %windir%\System32\tscon.exe %%s /dest:console
 )
 '@
@@ -395,48 +439,46 @@ Set-Content -Path "$PublicDesktop\AFK-Disconnect-Tanpa-Freeze.bat" -Value $KeepA
 
 $StopRdpBat = @'
 @echo off
-title Stop S-RDP Session
+title Stop & Backup S-RDP Session
 echo ========================================================
-echo   MATIKAN SERVER RDP SEKARANG?
+echo   SIMPAN DATA VAULT ^& MATIKAN SERVER RDP SEKARANG?
 echo ========================================================
-echo Ini akan menghentikan GitHub Actions lebih awal supaya
-echo hemat kuota menit GitHub Actions kamu.
+echo Seluruh data Steam, Discord, dan Folder Permanen akan
+echo di-backup otomatis (AES-256) sebelum server dimatikan.
 echo.
-choice /C YN /M "Apakah kamu yakin ingin mematikan RDP sekarang"
+choice /C YN /M "Yakin ingin menyimpan data dan mematikan RDP sekarang"
 if errorlevel 2 exit /b
-echo Mematikan sesi RDP...
+echo Mengirim sinyal Auto-Backup ^& Shutdown...
 echo stop > "C:\stop-s-rdp.flag"
-timeout /t 3
+timeout /t 4
 '@
 Set-Content -Path "$PublicDesktop\Matikan-Server-RDP.bat" -Value $StopRdpBat -Encoding ASCII
 
 $GuideTxt = @"
 ====================================================================
-  PANDUAN S-RDP KHUSUS AFK GAME BERAT (ZERO-COST MAX TUNED)
+  PANDUAN S-RDP KHUSUS AFK GAME BERAT (AUDITED & MAX TUNED)
 ====================================================================
 
 OPTIMASI AKTIF DI SERVER INI:
+  [v] Atomic AES-256 Anti-Reset Vault (Anti Data Corrupt/Hilang)
+  [v] Instant Zero-Copy AppData Junctions (Steam & Discord Siap Pakai)
   [v] Windows Defender + .NET NGEN + Telemetry KILLED (CPU Idle ~1-3%)
   [v] All 4 vCPU Threads Unparked @ 100% Boost Clock (AMD EPYC 3.24+ GHz)
-  [v] RDP 60 FPS Unlocked + AVC444/H.264 Low-Latency Mode
+  [v] RDP 60 FPS Unlocked + AVC444/H.264 + Console Locked 1280x720 100% DPI
   [v] 20 GB Virtual Memory Pagefile + Fast NTFS I/O Cache
   [v] Auto Game Priority Booster + Auto RAM Cleaner (Tiap 5 Menit)
-  [v] MMCSS Gaming Priority + DirectX TDR/WARP Tuned + TCP NoDelay
 
-1. PENTING AGAR GAME TIDAK FREEZE SAAT TUTUP RDP:
-   - JANGAN langsung klik tombol silang [X] di aplikasi Remote Desktop
-     kalau game kamu pakai auto-clicker / macro layar / render 3D!
-   - Klik 2x file "AFK-Disconnect-Tanpa-Freeze.bat" di Desktop.
-   - Script itu akan memutus RDP kamu dan memindahkan layar ke Console
-     aktif, sehingga game & bot jalan terus 100% di background.
-   - Kapan pun mau ngecek lagi, tinggal login RDP seperti biasa!
+1. AGAR KOORDINAT AUTO-CLICKER TIDAK GESER SAAT AFK:
+   - Disarankan atur Display Remote Desktop kamu ke resolusi 1280x720
+     (sama persis dengan resolusi layar Console AFK 1280x720 @ 100% DPI).
+   - Saat mau tinggal AFK, JANGAN klik [X]! Klik 2x file:
+     "AFK-Disconnect-Tanpa-Freeze.bat" di Desktop.
 
-2. TIPS OS RUNNER:
-   - Pilih "windows-2022" saat Run Workflow jika ingin pemakaian CPU & RAM
-     OS paling ringan dibanding "windows-2025".
-
-3. HEMAT WAKTU:
-   - Klik 2x "Matikan-Server-RDP.bat" di Desktop jika sudah selesai AFK.
+2. CARA AGAR STEAM, DISCORD, & GAME TIDAK HILANG TIAP 6 JAM:
+   - Login Steam sekali & centang "Remember Me".
+   - Install/simpan semua game & bot di dalam "Folder-Permanen-Anti-Reset".
+   - Klik "Simpan-Data-Sekarang.bat" kapan pun mau save manual, atau klik
+     "Matikan-Server-RDP.bat" saat selesai (otomatis backup sebelum mati).
 ====================================================================
 "@
 Set-Content -Path "$PublicDesktop\BACA-PANDUAN-AFK-GAME.txt" -Value $GuideTxt -Encoding UTF8

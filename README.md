@@ -6,6 +6,8 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 
 ## ✨ Fitur Utama (Khusus AFK Game — Zero-Cost Max Tuned)
 
+- **💾 Anti-Reset 6 Jam (Encrypted Vault AES-256 Tanpa Cloud Luar!)**: Otomatis menginstal **Steam & Discord**, lalu menyimpan seluruh isi folder **`D:\AFK-Data`** (termasuk game Steam yang sudah terunduh, sesi login *Remember Me* Steam, AppData Discord, & macro) ke GitHub Release (`s-rdp-vault`) dengan enkripsi militer **7-Zip AES-256 + Filename Encryption (`-mhe=on`)** yang dipecah per 1.9 GB (mendukung ukuran game puluhan GB!). Begitu RDP sesi berikutnya nyala, semua aplikasi & game langsung pulih dalam hitungan detik tanpa download ulang!
+- **♾️ Opsi Auto-Restart Estafet 24/7 (`auto_restart_chain`)**: Selesai backup di akhir jam ke-6, workflow bisa otomatis menyalakan sesi RDP baru untuk menyambung sesi sebelumnya.
 - **🔥 Kill 70% Background CPU Hogs (Idle CPU ~1–3%)**: Mematikan paksa penyedot CPU bawaan runner GitHub (*Windows Defender Real-Time Scan `MsMpEng.exe`*, *`.NET Runtime Optimization mscorsvw.exe`*, *`TiWorker`*, *`CompatTelRunner`*, dan *Scheduled Maintenance*) sehingga 100% tenaga 4 vCPU AMD EPYC (3.24+ GHz Boost) murni dipakai oleh game.
 - **🚀 CPU Core Unparking + Auto Game Priority Booster**: Membuka seluruh *CPU Core Parking* (`CPMINCORES=100%`), mengunci *Boost Mode* di 100%, serta otomatis menaikkan prioritas proses `.exe` game aktif ke `AboveNormal` setiap 5 menit.
 - **🖥️ Unlock RDP 60 FPS + AVC444/H.264 Low-Latency**: Membuka kunci batas bawaan Windows Server (30 FPS → **60 FPS** via `DWMFRAMEINTERVAL=15`) serta mengaktifkan mode grafis H.264/AVC444 supaya kontrol layar jauh lebih halus.
@@ -38,8 +40,13 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 
 | Nama Secret | Isi / Contoh Nilai | Keterangan |
 | :--- | :--- | :--- |
-| `TS_AUTHKEY` | `tskey-auth-kxxxxxCNTRL-xxxxxxxxxxxx` | Auth Key dari Tailscale pada Langkah 1. |
-| `RDP_PASSWORD` | `AfkGaming#2026!` | Password untuk login Windows RDP (**Wajib min. 8 karakter** kombinasi huruf besar, huruf kecil, angka, dan simbol). |
+| `TS_AUTHKEY` | `tskey-auth-kxxxxxCNTRL-xxxxxxxxxxxx` | **Wajib** — Auth Key dari Tailscale pada Langkah 1. |
+| `RDP_PASSWORD` | `AfkGaming#2026!` | **Wajib** — Password login RDP sekaligus password enkripsi AES-256 Vault (**Wajib min. 8 karakter** kombinasi huruf besar, kecil, angka, dan simbol). |
+| `VAULT_PASSWORD` | *(Opsional)* | Password terpisah khusus enkripsi Vault jika tidak ingin memakai `RDP_PASSWORD`. |
+| `PAT_TOKEN` | *(Opsional)* | Classic Personal Access Token (`repo`, `workflow`) — hanya diperlukan jika kamu mencentang `auto_restart_chain` untuk jalan estafet otomatis > 12 jam nonstop. |
+
+> **⚙️ Penting untuk Fitur Anti-Reset (Vault):**  
+> Buka **Settings** → **Actions** → **General** → scroll ke **Workflow permissions**, pastikan terpilih **Read and write permissions**, lalu klik **Save** (agar GitHub Actions diizinkan menyimpan file backup terenkripsi ke Release).
 
 ---
 
@@ -66,6 +73,22 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
    - **Windows**: Buka **Remote Desktop Connection** (`mstsc`).
    - **Android / iOS / macOS**: Install aplikasi resmi **Windows App** (dulunya Microsoft Remote Desktop) dari Play Store / App Store.
 3. Masukkan **IP Tailscale** (`100.x.y.z`), Username (`gamer`), dan Password sesuai `RDP_PASSWORD`.
+
+---
+
+## 💾 Cara Kerja Anti-Reset 6 Jam (Steam, Discord, & Game)
+
+1. **Steam & Discord Otomatis Siap di Desktop**:
+   - **Steam** terinstal langsung di dalam folder permanen (`D:\AFK-Data\Steam`). Saat pertama kali login Steam, pastikan centang **"Remember Me"** — di sesi-sesi 6 jam berikutnya, **Steam + semua game yang sudah kamu download di dalamnya langsung terbuka dan auto-login tanpa Steam Guard/download ulang!**
+   - **Discord** otomatis disiapkan di Desktop dan data `%AppData%\discord` serta `%LocalAppData%\Discord` ikut di-backup. *(Catatan keamanan Discord: kadang sistem enkripsi DPAPI Windows / deteksi IP baru Discord meminta konfirmasi login ulang saat ganti VM, tapi aplikasinya sendiri langsung siap tanpa perlu download ulang).*
+2. **Simpan Semua Game/Bot Non-Steam di `Folder-Permanen-Anti-Reset`**:
+   - Klik 2x shortcut **`Folder-Permanen-Anti-Reset`** (`D:\AFK-Data`) di Desktop, lalu taruh semua game launcher lain, macro, atau script AFK kamu di dalam sana.
+   - Semua data dienkripsi **AES-256 (`-mhe=on`)** memakai `RDP_PASSWORD` kamu sehingga 100% aman dari orang luar walaupun repository bersifat Public.
+3. **Kapan Data Disimpan Otomatis?**
+   - Otomatis tersimpan saat timer durasi habis (misal menit ke-340).
+   - Otomatis tersimpan saat kamu klik 2x **`Matikan-Server-RDP.bat`** di Desktop.
+   - Bisa disimpan manual kapan saja selagi RDP menyala dengan klik 2x **`Simpan-Data-Sekarang.bat`** di Desktop!
+   - *(Hindari klik tombol merah **Cancel workflow** paksa di web GitHub karena akan memutus proses sebelum backup terunggah).*
 
 ---
 

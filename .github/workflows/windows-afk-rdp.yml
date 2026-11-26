@@ -16,14 +16,20 @@ on:
           - "300"
           - "330"
       runner_os:
-        description: "Versi Windows Server Runner (windows-2022 paling ringan CPU & DWM)"
+        description: "Pilih Spesifikasi Runner (windows-2022/2025 = 4 vCPU x64 Gratis | windows-11-arm = 4 Physical Cores Win11 Gratis | 8-64core butuh Larger Runner)"
         required: true
         default: "windows-2022"
         type: choice
         options:
           - "windows-2022"
+          - "windows-11-arm"
           - "windows-2025"
           - "windows-latest"
+          - "windows-latest-8-cores"
+          - "windows-2022-8core"
+          - "windows-2022-16core"
+          - "windows-2022-32core"
+          - "windows-2022-64core"
       rdp_user:
         description: "Username Login RDP"
         required: true
@@ -171,16 +177,20 @@ jobs:
           AUTO_CHAIN: ${{ inputs.auto_restart_chain }}
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) {
+            $tsCmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+            if ($tsCmd) { $tsExe = $tsCmd.Source }
+          }
           $tsIp = (& $tsExe ip -4 | Select-Object -First 1).Trim()
           $tsStatus = (& $tsExe status --json | ConvertFrom-Json)
           $dnsName = $tsStatus.Self.DNSName.TrimEnd('.')
 
           $freeC = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
           $freeD = if (Get-PSDrive D -ErrorAction SilentlyContinue) { [math]::Round((Get-PSDrive D).Free / 1GB, 1) } else { 0 }
-          $cpuObj = Get-CimInstance Win32_Processor | Select-Object -First 1
-          $cpuName = $cpuObj.Name.Trim()
-          $cpuCores = $cpuObj.NumberOfCores
-          $cpuThreads = $cpuObj.NumberOfLogicalProcessors
+          $cpuProcs = @(Get-CimInstance Win32_Processor)
+          $cpuName = $cpuProcs[0].Name.Trim()
+          $cpuCores = ($cpuProcs | Measure-Object -Property NumberOfCores -Sum).Sum
+          $cpuThreads = ($cpuProcs | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $osRamGb = [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize / 1MB, 1)
           $vaultRoot = if (Test-Path "C:\ProgramData\S-RDP\vault-root.txt") { (Get-Content "C:\ProgramData\S-RDP\vault-root.txt" -Raw).Trim() } else { "Nonaktif" }
 

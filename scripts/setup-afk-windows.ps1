@@ -218,6 +218,8 @@ if (Test-Path $DefaultNtUser) {
 
 bcdedit /set testsigning off 2>$null | Out-Null
 bcdedit /set disabledynamictick yes 2>$null | Out-Null
+bcdedit /deletevalue numproc 2>$null | Out-Null
+bcdedit /deletevalue truncatememory 2>$null | Out-Null
 
 Write-Host "==> [5/10] Unlocking RDP 60 FPS, H.264/AVC444 & Enabling Audio Sink..." -ForegroundColor Cyan
 $DwmWinStation = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations"
@@ -259,7 +261,10 @@ foreach ($hog in @("mscorsvw", "ngen", "ngentask", "CompatTelRunner", "TiWorker"
     Get-Process -Name $hog | Stop-Process -Force
 }
 
-# 2. Auto-Boost active user GUI applications (Games) & ignore system/launcher helpers
+# 2. Auto-Boost active user GUI applications (Games) & force ALL Logical Processors (Full Multi-Core Affinity Mask)
+$logicalCount = [Environment]::ProcessorCount
+$fullAffinityMask = if ($logicalCount -ge 64) { [IntPtr]::new(-1) } else { [IntPtr]::new(([int64]1 -shl $logicalCount) - 1) }
+
 $systemIgnore = @(
     "explorer", "taskmgr", "cmd", "powershell", "pwsh", "conhost", "dwm", "csrss", "winlogon",
     "svchost", "lsass", "services", "tailscaled", "tailscale-ipn", "rdpclip", "sihost", "ctfmon",
@@ -270,6 +275,8 @@ Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($systemIgnore -notc
     if ($_.PriorityClass -eq "Normal") {
         $_.PriorityClass = "AboveNormal"
     }
+    # Unlock full vCPU thread affinity in case a 32-bit/legacy game locked itself to 1-2 cores!
+    $_.ProcessorAffinity = $fullAffinityMask
 }
 
 # 3. Trim leaked background RAM if total memory > 78%

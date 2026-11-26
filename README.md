@@ -57,7 +57,11 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 2. Pilih workflow **Windows AFK Gaming RDP (Tailscale)** di panel sebelah kiri.
 3. Klik tombol **Run workflow**, lalu sesuaikan opsi jika perlu:
    - **Durasi sesi RDP**: Pilih `60` s/d `330` menit (~5 jam 30 menit, menyisakan buffer aman 30 menit untuk Atomic Auto-Backup sebelum batas keras 6 jam GitHub Actions).
-   - **Versi Windows Server**: `windows-2022` (direkomendasikan karena paling stabil untuk game) atau `windows-2025`.
+   - **Pilih Spesifikasi Runner (`runner_os`)**:
+     - `windows-2022` *(Default Direkomendasikan — Gratis Public Repo)*: **4 vCPU** (`2 Physical Cores / 4 Logical Threads` AMD EPYC x64 @ 3.24+ GHz) + **16 GB RAM**. Kompatibilitas game `.exe` x64 paling tinggi & ringan.
+     - `windows-11-arm` *(Gratis Public Repo — **4 Physical Cores Murni!**)*: Menggunakan prosesor Azure Cobalt 100 **4 Full Physical Cores** (`4 Cores / 4 Threads`) + **16 GB RAM** dengan **Windows 11 Desktop** + emulator Microsoft Prism x64! Cocok dicoba jika ingin 4 core fisik murni tanpa pembagian Hyper-Threading.
+     - `windows-2025` / `windows-latest`: **4 vCPU** x64 + **16 GB RAM** (Windows Server 2025).
+     - `windows-2022-8core` s/d `64core`: Opsi **8 hingga 64 vCPU** (hingga **256 GB RAM**) — khusus jika organisasi/akun GitHub kamu sudah mengaktifkan *GitHub Larger Runners*.
    - **Username Login RDP**: Default `gamer`.
    - **Install Game Runtimes**: Biarkan `true` agar DirectX & VC++ langsung terpasang.
    - **Download Mesa3D**: Centang `true` hanya jika game kamu komplain error OpenGL / GPU tidak terdeteksi.

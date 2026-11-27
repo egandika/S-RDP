@@ -6,9 +6,13 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 
 ## ✨ Fitur Utama (Khusus AFK Game — Zero-Cost Max Tuned)
 
+> **Semua fitur data & kompatibilitas sudah DITANAM PERMANEN (tanpa centang):**
+> Anti-Reset 6 Jam (Atomic AES-256 Vault), pembersihan SDK GitHub (+~30 GB), Mesa3D Software GPU Renderer,
+> DirectX 9/10/11 Legacy + VC++ Redistributable, serta auto-install **Steam & Discord**.
+> **Username RDP selalu `egandika`** — tidak perlu diisi lagi. Fitur *Auto-Restart 24/7* sudah **dihapus**.
+
 - **💾 Anti-Reset 6 Jam (Atomic AES-256 Vault + Instant NTFS Junctions)**: Otomatis menginstal **Steam & Discord**, menghubungkan folder profil via **NTFS Directory Junction (`mklink /J`)** (0 detik waktu salin, bebas duplikasi ruang disk, & bebas bug *Corrupt User Profile*), serta menyimpan seluruh isi **`D:\AFK-Data`** ke GitHub Release (`s-rdp-vault`) dengan **Atomic Staging Swap** (`s-rdp-vault-staging` → `s-rdp-vault`) berenkripsi **7-Zip AES-256 + Filename Encryption (`-mhe=on`)** sehingga backup lama mustahil terhapus jika koneksi terputus!
 - **🎯 Locked Console Resolution (`1280x720 @ 100% DPI`)**: Menyeragamkan resolusi & skala DPI layar Console dengan RDP agar titik koordinat *Auto-Clicker / Macro* tidak bergeser saat pindah ke mode AFK (`tscon`).
-- **♾️ Opsi Auto-Restart Estafet 24/7 (`auto_restart_chain`)**: Selesai backup di akhir jam ke-6, workflow bisa otomatis menyalakan sesi RDP baru untuk menyambung sesi sebelumnya.
 - **🔥 Kill 70% Background CPU Hogs (Idle CPU ~1–3%)**: Mematikan paksa penyedot CPU bawaan runner GitHub (*Windows Defender Real-Time Scan `MsMpEng.exe`*, *`.NET Runtime Optimization mscorsvw.exe`*, *`TiWorker`*, *`CompatTelRunner`*, dan *Scheduled Maintenance*) sehingga 100% tenaga 4 vCPU AMD EPYC (3.24+ GHz Boost) murni dipakai oleh game.
 - **🚀 CPU Core Unparking + Auto Game Priority Booster**: Membuka seluruh *CPU Core Parking* (`CPMINCORES=100%`), mengunci *Boost Mode* di 100%, serta otomatis menaikkan prioritas proses `.exe` game aktif ke `AboveNormal` setiap 5 menit.
 - **🖥️ RDP Frame Pacing Adaptif + TermDD FlowControl Dilepas**: `DWMFRAMEINTERVAL` dihitung otomatis dari opsi **`rdp_fps`** (default **30 FPS** — angka paling seimbang untuk render CPU; `60` hanya berguna kalau runner punya GPU), plus `FlowControlDisable=1`, `VGOptimization_CaptureFrameRate`, dan `MaxCompressionLevel` supaya layar RDP tidak lagi terasa seperti *slideshow*. Mode **AVC444/H.264 hardware encode hanya dinyalakan bila benar-benar ada GPU** (lihat [kenapa 5 FPS](#-kenapa-game-cuma-5-fps-akar-masalah--solusinya)).
@@ -21,7 +25,7 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 - **🛡️ Anti-Freeze Saat Tutup RDP (`AFK-Disconnect-Tanpa-Freeze.bat`)**: Memindahkan sesi aktif ke `Console` (`tscon`) agar render game 3D, macro, atau auto-clicker tetap jalan 100% di belakang layar saat RDP ditutup.
 - **📦 Pre-installed Game Runtimes**: Otomatis memasang **DirectX 9/10/11 End-User Legacy Runtimes** dan **Visual C++ Redistributable 2015–2022 (x86 & x64)** supaya game tidak error `.dll` (`d3dx9_43.dll`, `vcruntime140.dll`, dll).
 - **🖥️ Direktori Mesa3D Lengkap**: Paket `mesa3d-*-release-msvc.7z` diekstrak ke `C:\Tools\Mesa3D` (folder `x64` & `x86`), sehingga launcher per-game maupun `opengl32.dll` system-wide selalu memakai versi Mesa3D terbaru.
-- **💾 Opsi Ekstra Ruang Penyimpanan (+30 GB SSD)**: Tersedia opsi pembersihan SDK bawaan runner jika game yang ingin diinstal berukuran besar.
+- **💾 Ekstra Ruang Penyimpanan (+~30 GB SSD)**: Pembersihan SDK bawaan runner (Android SDK, GHC/ghcup, CodeQL, .NET SDK) **selalu dijalankan otomatis** supaya game besar punya ruang lega.
 - **🔒 Aman & Privat dengan Tailscale**: Port `3389` tidak diekspos ke internet publik, hanya bisa diakses dari perangkat HP/PC milikmu yang terhubung ke jaringan Tailscale yang sama.
 
 ---
@@ -48,7 +52,6 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 | `TS_AUTHKEY` | `tskey-auth-kxxxxxCNTRL-xxxxxxxxxxxx` | **Wajib** — Auth Key dari Tailscale pada Langkah 1. |
 | `RDP_PASSWORD` | `AfkGaming#2026!` | **Wajib** — Password login RDP sekaligus password enkripsi AES-256 Vault (**Wajib min. 8 karakter** kombinasi huruf besar, kecil, angka, dan simbol). |
 | `VAULT_PASSWORD` | *(Opsional)* | Password terpisah khusus enkripsi Vault jika tidak ingin memakai `RDP_PASSWORD`. |
-| `PAT_TOKEN` | *(Opsional)* | Classic Personal Access Token (`repo`, `workflow`) — hanya diperlukan jika kamu mencentang `auto_restart_chain` untuk jalan estafet otomatis > 12 jam nonstop. |
 
 > **⚙️ Penting untuk Fitur Anti-Reset (Vault):**  
 > Buka **Settings** → **Actions** → **General** → scroll ke **Workflow permissions**, pastikan terpilih **Read and write permissions**, lalu klik **Save** (agar GitHub Actions diizinkan menyimpan file backup terenkripsi ke Release).
@@ -66,15 +69,14 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
      - `windows-11-arm` *(Gratis Public Repo — **4 Physical Cores Murni!**)*: Menggunakan prosesor Azure Cobalt 100 **4 Full Physical Cores** (`4 Cores / 4 Threads`) + **16 GB RAM** dengan **Windows 11 Desktop** + emulator Microsoft Prism x64! Cocok dicoba jika ingin 4 core fisik murni tanpa pembagian Hyper-Threading.
      - `windows-2025` / `windows-latest`: **4 vCPU** x64 + **16 GB RAM** (Windows Server 2025).
      - `windows-2022-8core` s/d `64core`: Opsi **8 hingga 64 vCPU** (hingga **256 GB RAM**) — khusus jika organisasi/akun GitHub kamu sudah mengaktifkan *GitHub Larger Runners*.
-   - **Username Login RDP**: Default `gamer` (1–20 karakter: huruf, angka, titik, `_`, `-`). Nilai tidak valid akan ditolak sebelum workflow jalan.
    - **Nama Perangkat Tailscale**: Default `s-rdp-afk` (huruf kecil, angka, `-`).
-   - **Install Game Runtimes**: Biarkan `true` agar DirectX & VC++ langsung terpasang.
-   - **Deploy Mesa3D (`install_mesa3d`)**: Biarkan `true`. Ini yang membuat OpenGL naik dari 1.1 → 4.5 dan game/emulator bisa render di runner tanpa GPU.
-   - **Tuning Renderer GPU-less (`tune_rendering`)**: Biarkan `true` (menyetel `LP_NUM_THREADS`, `mesa_glthread`, `vblank_mode=0`, dan encoder RDP hemat CPU).
    - **Batas FPS RDP (`rdp_fps`)**: `30` (default, paling stabil) · `24` / `15` kalau CPU masih penuh · `60` hanya untuk runner ber-GPU.
-   - **Bersihkan SDK bawaan**: Centang `true` jika ukuran game besar dan butuh tambahan ruang kosong ~30 GB.
+   - **Tuning Renderer GPU-less (`tune_rendering`)**: Biarkan `true` (menyetel `LP_NUM_THREADS`, `mesa_glthread`, `vblank_mode=0`, dan encoder RDP hemat CPU).
 4. Klik **Run workflow** dan tunggu sekitar **2–3 menit**.
 5. Buka run yang sedang berjalan → lihat di bagian **Summary** (atau buka log step **`Tampilkan Informasi Koneksi RDP`**) untuk melihat **IP Tailscale** kamu (contoh: `100.x.y.z`).
+
+> ℹ️ **Tidak ada centang yang perlu diatur lagi.** Anti-Reset Vault, pembersihan SDK (+~30 GB), Mesa3D,
+> DirectX + VC++, serta instalasi Steam & Discord **selalu dijalankan otomatis**, dan username RDP selalu **`egandika`**.
 
 ---
 
@@ -84,7 +86,7 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 2. Buka aplikasi Remote Desktop:
    - **Windows**: Buka **Remote Desktop Connection** (`mstsc`).
    - **Android / iOS / macOS**: Install aplikasi resmi **Windows App** (dulunya Microsoft Remote Desktop) dari Play Store / App Store.
-3. Masukkan **IP Tailscale** (`100.x.y.z`), Username (`gamer`), dan Password sesuai `RDP_PASSWORD`.
+3. Masukkan **IP Tailscale** (`100.x.y.z`), Username **`egandika`**, dan Password sesuai `RDP_PASSWORD`.
 
 ---
 
@@ -115,7 +117,7 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 | `Cek-Performa-Render.bat` | Diagnostik: adapter GPU, status Mesa3D, `DWMFRAMEINTERVAL`, `LP_NUM_THREADS`, 10 proses terberat, pemakaian RAM. |
 | `AFK-Disconnect-Tanpa-Freeze.bat` | Pindahkan sesi ke Console (`tscon`) supaya game tetap render saat RDP ditutup. |
 | `Simpan-Data-Sekarang.bat` | Live snapshot Vault tanpa menutup game. |
-| `Matikan-Server-RDP.bat` | Backup final + hentikan sesi (mencegah auto-restart). |
+| `Matikan-Server-RDP.bat` | Backup final + hentikan sesi lebih awal (hemat kuota menit Actions). |
 | `BACA-PANDUAN-AFK-GAME.txt` | Ringkasan semua tips di atas, tersimpan offline di Desktop. |
 
 ---

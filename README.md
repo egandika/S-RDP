@@ -261,8 +261,28 @@ Kabar baiknya: **Lords Mobile punya versi PC resmi**, jadi tidak butuh emulator 
 3. Login sekali, hubungkan akun (**Steam / Facebook / IGG / Google**), centang *remember me*.
 4. **Setting di dalam game** (menu ⚙️ → Graphics): **Low / Medium**, `Effect` **OFF**, `FPS limit 30`, `Resolution` sama dengan RDP (`1280x720`), matikan *battle effect* / *city animation* bila ada.
 
-### Ekspektasi FPS
-Lords Mobile itu **2D isometrik** — jauh lebih ringan daripada game 3D. Di 4 vCPU tanpa GPU, `1280x720` biasanya **25–45 FPS**; turun ke **1024x768** kalau *world map* atau battle besar terasa berat. Ini termasuk game yang memang **cocok** untuk runner gratis.
+### Lancar atau tidak? (jawaban jujur per kondisi)
+
+Lords Mobile PC = **build mobile yang di-port ke Windows** (rilis 2 Juni 2019, IGG), jadi renderer-nya memang dibuat untuk GPU HP kelas bawah — inilah jenis game yang **paling aman** di runner tanpa GPU. Perkiraan realistis di `windows-2022` (4 vCPU, WARP/llvmpipe, `1280x720`):
+
+| Kondisi di game | Perkiraan | Terasa bagaimana |
+| :--- | :--- | :--- |
+| Menu, login, UI, toko, research/building | **30 FPS stabil** (batas FPS game) | **Mulus** — semua UI 2D, tidak ada beban 3D |
+| Kota (city view) | **28–30 FPS** | Mulus; animasi bangunan sesekali drop 1–2 frame |
+| World map (zoom out, banyak kota) | **20–30 FPS** | Nyaman untuk navigasi; scroll sedikit *step* saat banyak guild castle |
+| Battle 300v300 / Guild Showdown / KvK | **15–25 FPS** | **Bisa dilihat & dikendalikan**, tapi jelas tidak 60 FPS |
+| Hero stage / battle animation | **25–30 FPS** | Lancar |
+
+**Kesimpulan:** untuk **cara main Lords Mobile yang sebenarnya** (bangun kota, research, gathering, shield, guild event, AFK farming, cek chat) → **lancar**, karena game ini berbasis *timer*, bukan refleks. Yang tidak didapat: 60 FPS di battle besar sambil resolusi 1080p + efek penuh — itu butuh GPU.
+
+**Yang bikin jadi TIDAK lancar** (hindari ini):
+1. Tailscale lewat **RELAY DERP** → input terasa berat. Cek baris *Latensi Tailscale* di Summary run.
+2. `rdp_fps = 60` → DWM+encoder makan 2 dari 4 core, FPS game justru **turun**.
+3. Resolusi `1920x1080` → pixel 2,25× lebih banyak untuk rasterizer software. Pakai `1280x720`.
+4. Grafis in-game **High/Ultra** + efek battle ON.
+5. Login pertama: game mengunduh resource & kompilasi shader → 1–2 menit pertama tersendat, **sesi berikutnya mulus** (shader cache & `LocalLow` ikut Vault).
+
+**Tangga penurunan kalau masih berat:** `1280x720` → `1024x768` → `960x540`, grafis in-game Low, effect OFF, FPS limit 30 → terakhir `rdp_fps = 24`. Kalau setelah semua ini battle besar masih <15 FPS, itu sudah batas fisik 4 vCPU tanpa GPU — bukan bug skrip.
 
 ### Supaya AFK-nya benar (ini inti permainannya)
 | Kebutuhan Lords Mobile | Cara di repo ini |

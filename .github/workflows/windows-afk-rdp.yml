@@ -30,46 +30,11 @@ on:
           - "windows-2022-16core"
           - "windows-2022-32core"
           - "windows-2022-64core"
-      rdp_user:
-        description: "Username Login RDP (1-20 karakter: huruf, angka, titik, _ , -)"
-        required: true
-        default: "gamer"
-        type: string
       hostname:
         description: "Nama Perangkat di Tailscale (huruf kecil, angka, strip; maks 63)"
         required: true
         default: "s-rdp-afk"
         type: string
-      enable_vault_sync:
-        description: "Aktifkan Anti-Reset 6 Jam (Atomic AES-256 Restore & Backup untuk Steam, Discord, & Folder Permanen)"
-        required: true
-        default: true
-        type: boolean
-      auto_install_apps:
-        description: "Auto-Install Steam & Discord siap pakai ke Folder Permanen"
-        required: true
-        default: true
-        type: boolean
-      auto_restart_chain:
-        description: "Auto-Restart 24/7 (Otomatis nyalakan sesi RDP baru setelah backup selesai & Tailscale logout)"
-        required: false
-        default: false
-        type: boolean
-      install_game_runtimes:
-        description: "Install DirectX 9/10/11 Legacy + Smart VC++ Check (Wajib untuk kebanyakan game)"
-        required: true
-        default: true
-        type: boolean
-      install_mesa3d:
-        description: "Deploy Mesa3D llvmpipe (OpenGL 4.5) untuk runner tanpa GPU — WAJIB untuk game OpenGL / emulator"
-        required: false
-        default: true
-        type: boolean
-      tune_rendering:
-        description: "Tuning renderer GPU-less (LP_NUM_THREADS, mesa_glthread, vblank off, RDP encoder hemat CPU)"
-        required: false
-        default: true
-        type: boolean
       rdp_fps:
         description: "Batas FPS komposisi desktop RDP (30 = paling seimbang untuk render CPU; 60 hanya untuk runner ber-GPU)"
         required: false
@@ -80,15 +45,14 @@ on:
           - "24"
           - "30"
           - "60"
-      cleanup_sdk_space:
-        description: "Bersihkan SDK bawaan GitHub (Android/GHC/CodeQL) untuk tambah ~30GB ruang kosong SSD"
+      tune_rendering:
+        description: "Tuning renderer GPU-less (LP_NUM_THREADS, mesa_glthread, vblank off, RDP encoder hemat CPU)"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: s-rdp-tailscale-${{ inputs.hostname || 'default' }}
@@ -111,7 +75,7 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
           VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
-          SETUP_USER: ${{ inputs.rdp_user }}
+          SETUP_USER: "egandika"
           TS_HOSTNAME: ${{ inputs.hostname }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
@@ -138,33 +102,29 @@ jobs:
             exit 1
           }
 
-          # Input bebas ini dipakai sebagai nama folder (C:\Users\<user>) dan argumen icacls, jadi wajib difilter
-          # agar tidak bisa dipakai untuk path traversal / command injection.
+          # Username RDP sekarang dikunci di "egandika" (tanpa input), jadi tetap aman dipakai sebagai
+          # nama folder C:\Users\<user> maupun argumen icacls.
           if ($env:SETUP_USER -notmatch '^[A-Za-z0-9._-]{1,20}$') {
-            Write-Error "Username RDP tidak valid! Gunakan 1-20 karakter: huruf, angka, titik, garis bawah, atau strip. Contoh: gamer"
-            exit 1
-          }
-          if ($env:SETUP_USER -eq '.' -or $env:SETUP_USER -eq '..') {
-            Write-Error "Username RDP tidak boleh '.' atau '..'"
+            Write-Error "Username RDP internal tidak valid: '$($env:SETUP_USER)'"
             exit 1
           }
           if ($env:TS_HOSTNAME -notmatch '^[a-z0-9][a-z0-9-]{0,62}$') {
             Write-Error "Nama perangkat Tailscale tidak valid! Gunakan huruf kecil, angka, dan strip (maks 63 karakter), contoh: s-rdp-afk"
             exit 1
           }
-          Write-Host "Secret TS_AUTHKEY & RDP_PASSWORD serta input Username/Hostname terdeteksi valid." -ForegroundColor Green
+          Write-Host "Secret TS_AUTHKEY & RDP_PASSWORD serta Hostname terdeteksi valid (username dikunci: $($env:SETUP_USER))." -ForegroundColor Green
 
-      - name: (Opsional) Bersihkan Disk untuk Game Ukuran Besar (+30GB Free)
-        if: ${{ inputs.cleanup_sdk_space == true }}
+      - name: Bersihkan Disk untuk Game Ukuran Besar (+30GB Free)
         shell: pwsh
         run: |
           Write-Host "Membersihkan folder SDK besar yang tidak terpakai oleh game..." -ForegroundColor Cyan
+          # CATATAN: folder temp runner (D:\a\_temp / $env:RUNNER_TEMP) TIDAK boleh dihapus karena step
+          # yang sedang berjalan mengeksekusi skripnya dari sana.
           $Targets = @(
             "C:\Android",
             "C:\hostedtoolcache\windows\CodeQL",
             "C:\ghcup",
-            "C:\Program Files\dotnet\sdk",
-            "D:\a\_temp"
+            "C:\Program Files\dotnet\sdk"
           )
           foreach ($targetPath in $Targets) {
             if (Test-Path -LiteralPath $targetPath) {
@@ -179,10 +139,8 @@ jobs:
       - name: Optimasi Windows Server & Setup Mode AFK Game
         shell: pwsh
         env:
-          SETUP_USER: ${{ inputs.rdp_user }}
+          SETUP_USER: "egandika"
           SETUP_PASS: ${{ secrets.RDP_PASSWORD }}
-          INSTALL_RUNTIMES: ${{ inputs.install_game_runtimes }}
-          INSTALL_MESA: ${{ inputs.install_mesa3d }}
           TUNE_RENDERING: ${{ inputs.tune_rendering }}
           RDP_FPS: ${{ inputs.rdp_fps }}
         run: |
@@ -191,26 +149,24 @@ jobs:
           & .\scripts\setup-afk-windows.ps1 `
             -RdpUser $env:SETUP_USER `
             -RdpPassword $env:SETUP_PASS `
-            -InstallGameRuntimes "$($env:INSTALL_RUNTIMES)" `
-            -InstallMesa3D "$($env:INSTALL_MESA)" `
+            -InstallGameRuntimes "true" `
+            -InstallMesa3D "true" `
             -TuneRendering "$($env:TUNE_RENDERING)" `
             -RdpFps $fps
           if ($LASTEXITCODE -ne 0) { throw "setup-afk-windows.ps1 gagal (exit $LASTEXITCODE)" }
 
       - name: Pulihkan Data Permanen (Steam, Discord, & Atomic Vault AES-256)
-        if: ${{ inputs.enable_vault_sync == true }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           VAULT_PASS: ${{ secrets.VAULT_PASSWORD || secrets.RDP_PASSWORD }}
-          SETUP_USER: ${{ inputs.rdp_user }}
-          INSTALL_APPS: ${{ inputs.auto_install_apps }}
+          SETUP_USER: "egandika"
         run: |
           & .\scripts\sync-vault.ps1 `
             -Mode "restore" `
             -VaultPassword $env:VAULT_PASS `
             -RdpUser $env:SETUP_USER `
-            -InstallApps "$($env:INSTALL_APPS)"
+            -InstallApps "true"
           if ($LASTEXITCODE -ne 0) { throw "sync-vault.ps1 (restore) gagal (exit $LASTEXITCODE)" }
 
       - name: Install & Hubungkan Tailscale VPN
@@ -224,12 +180,9 @@ jobs:
         id: conn_info
         shell: pwsh
         env:
-          RDP_USER: ${{ inputs.rdp_user }}
+          RDP_USER: "egandika"
           DURATION: ${{ inputs.duration_minutes }}
-          VAULT_ENABLED: ${{ inputs.enable_vault_sync }}
-          AUTO_CHAIN: ${{ inputs.auto_restart_chain }}
           RDP_FPS: ${{ inputs.rdp_fps }}
-          MESA_ENABLED: ${{ inputs.install_mesa3d }}
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
           if (-not (Test-Path $tsExe)) {
@@ -287,7 +240,6 @@ jobs:
           Write-Host " Password            : (Sesuai Secret RDP_PASSWORD kamu)" -ForegroundColor Cyan
           Write-Host " Hardware Runner     : $cpuName ($cpuCores Cores / $cpuThreads vCPU Threads) | $osRamGb GB RAM"
           Write-Host " Folder Anti-Reset   : $vaultRoot (Atomic AES-256 Auto-Backup)" -ForegroundColor Green
-          Write-Host " Auto-Restart 24/7   : $($env:AUTO_CHAIN)"
           Write-Host " Sisa Disk Space     : C: $freeC GB | D: $freeD GB (+ 20 GB Virtual Pagefile)"
           Write-Host " Durasi Sesi         : $($env:DURATION) menit"
           Write-Host "----------------------------------------------------------------"
@@ -314,7 +266,7 @@ jobs:
             "| **Jalur Render** | ``$renderPath`` — Mesa3D OpenGL: **$mesaActive** (`LP_NUM_THREADS=$rasterThreads`) |",
             "| **Frame Pacing RDP** | ``$fpsLabel`` *(turunkan ke 24/15 bila CPU masih penuh)* |",
             "| **Resolusi Console AFK** | ``1280x720 @ 100% DPI`` *(Samakan resolusi aplikasi RDP ke 1280x720 untuk Auto-Clicker)* |",
-            "| **Auto-Restart 24/7** | ``$($env:AUTO_CHAIN)`` |",
+            "| **Fitur Keamanan Data** | Anti-Reset Vault, Steam/Discord, DirectX+VC++, Mesa3D, dan pembersihan SDK **selalu aktif** |",
             "| **Kapasitas Kosong** | ``C:\`` **$freeC GB** / ``D:\`` **$freeD GB** |",
             "| **Batas Waktu** | **$($env:DURATION) Menit** |",
             "",
@@ -333,8 +285,7 @@ jobs:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
           GH_TOKEN: ${{ github.token }}
           VAULT_PASS: ${{ secrets.VAULT_PASSWORD || secrets.RDP_PASSWORD }}
-          SETUP_USER: ${{ inputs.rdp_user }}
-          VAULT_ENABLED: ${{ inputs.enable_vault_sync }}
+          SETUP_USER: "egandika"
         run: |
           $maxMinutes = [int]$env:DURATION_MINUTES
           if ($maxMinutes -gt 330) { $maxMinutes = 330 }
@@ -354,7 +305,7 @@ jobs:
               break
             }
 
-            if ((Test-Path "C:\save-s-rdp-now.flag") -and ($env:VAULT_ENABLED -eq "true")) {
+            if (Test-Path "C:\save-s-rdp-now.flag") {
               Remove-Item "C:\save-s-rdp-now.flag" -Force -ErrorAction SilentlyContinue
               Write-Host "[LIVE SNAPSHOT] Menyimpan snapshot Vault di tengah sesi tanpa menutup game..." -ForegroundColor Green
               & .\scripts\sync-vault.ps1 `
@@ -395,12 +346,12 @@ jobs:
           exit 0
 
       - name: Atomic Auto-Backup Data Permanen ke Encrypted Vault (AES-256)
-        if: ${{ !cancelled() && inputs.enable_vault_sync == true }}
+        if: ${{ !cancelled() }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           VAULT_PASS: ${{ secrets.VAULT_PASSWORD || secrets.RDP_PASSWORD }}
-          SETUP_USER: ${{ inputs.rdp_user }}
+          SETUP_USER: "egandika"
         run: |
           if (-not (Test-Path "C:\ProgramData\S-RDP\vault-root.txt")) {
             Write-Host "Vault belum diinisialisasi pada sesi ini, melewati backup."
@@ -412,7 +363,7 @@ jobs:
             -RdpUser $env:SETUP_USER `
             -IsLiveSnapshot "false"
 
-      - name: Logout Tailscale Node (Cleanup Sebelum Estafet)
+      - name: Logout Tailscale Node (Cleanup Akhir Sesi)
         if: always()
         shell: pwsh
         run: |
@@ -422,40 +373,8 @@ jobs:
             if ($tsCmd) { $tsExe = $tsCmd.Source }
           }
           if (Test-Path $tsExe) {
-            Write-Host "Memutuskan node dari Tailscale agar hostname '${{ inputs.hostname }}' bebas bentrok (-1)..."
+            Write-Host "Memutuskan node dari Tailscale agar hostname '${{ inputs.hostname }}' tidak bentrok di sesi berikutnya..."
             & $tsExe logout 2>$null
-          }
-          $global:LASTEXITCODE = 0
-          exit 0
-
-      - name: Auto-Restart Sesi RDP Berikutnya (Continuous 24/7 Chain)
-        if: ${{ !cancelled() && inputs.auto_restart_chain == true }}
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
-        run: |
-          if (Test-Path "C:\stop-s-rdp.flag") {
-            Write-Host "Sesi dimatikan manual oleh pengguna — Auto-Restart dilewati." -ForegroundColor Yellow
-            exit 0
-          }
-          Write-Host "Menyalakan sesi S-RDP berikutnya secara otomatis (Estafet 6 Jam)..." -ForegroundColor Cyan
-          & gh workflow run "windows-afk-rdp.yml" `
-            --repo $env:GITHUB_REPOSITORY `
-            --ref "${{ github.ref_name }}" `
-            -f duration_minutes="${{ inputs.duration_minutes }}" `
-            -f runner_os="${{ inputs.runner_os }}" `
-            -f rdp_user="${{ inputs.rdp_user }}" `
-            -f hostname="${{ inputs.hostname }}" `
-            -f enable_vault_sync="${{ inputs.enable_vault_sync }}" `
-            -f auto_install_apps="${{ inputs.auto_install_apps }}" `
-            -f auto_restart_chain="${{ inputs.auto_restart_chain }}" `
-            -f install_game_runtimes="${{ inputs.install_game_runtimes }}" `
-            -f install_mesa3d="${{ inputs.install_mesa3d }}" `
-            -f tune_rendering="${{ inputs.tune_rendering }}" `
-            -f rdp_fps="${{ inputs.rdp_fps }}" `
-            -f cleanup_sdk_space="${{ inputs.cleanup_sdk_space }}"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Untuk estafet berantai tanpa batas (>2 sesi berturut-turut), tambahkan Classic Personal Access Token (scope: repo, workflow) ke secret 'PAT_TOKEN' karena GITHUB_TOKEN standar dibatasi oleh aturan anti-loop GitHub."
           }
           $global:LASTEXITCODE = 0
           exit 0

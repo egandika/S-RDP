@@ -94,6 +94,9 @@ $DefenderPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"
 if (-not (Test-Path $DefenderPolicy)) { New-Item -Path $DefenderPolicy -Force | Out-Null }
 Set-ItemProperty -Path $DefenderPolicy -Name "DisableAntiSpyware" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $DefenderPolicy -Name "DisableRoutinelyTakingAction" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+$CfaPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access"
+if (-not (Test-Path $CfaPolicy)) { New-Item -Path $CfaPolicy -Force -ErrorAction SilentlyContinue | Out-Null }
+Set-ItemProperty -Path $CfaPolicy -Name "EnableControlledFolderAccess" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 $DefenderRtPolicy = "$DefenderPolicy\Real-Time Protection"
 if (-not (Test-Path $DefenderRtPolicy)) { New-Item -Path $DefenderRtPolicy -Force | Out-Null }
 foreach ($prop in @("DisableRealtimeMonitoring", "DisableBehaviorMonitoring", "DisableOnAccessProtection", "DisableScanOnRealtimeEnable", "DisableIOAVProtection")) {
@@ -106,9 +109,13 @@ Get-Service -Name "clr_optimization_*" -ErrorAction SilentlyContinue | ForEach-O
     Set-Service -Name $_.Name -StartupType Disabled -ErrorAction SilentlyContinue
 }
 
+# CATATAN: layanan Xbox (XblAuthManager/XblGameSave/XboxNetApiSvc) SENGAJA TIDAK dimatikan karena
+# banyak game (terutama Microsoft Store / Game Pass) membutuhkannya.
 $HeavyServices = @(
     "WSearch", "wuauserv", "UsoSvc", "DoSvc", "DiagTrack", "dmwappushservice",
-    "SysMain", "Spooler", "MapsBroker", "lfsvc", "WerSvc", "PcaSvc", "DPS", "WdiServiceHost", "WdiSystemHost"
+    "SysMain", "Spooler", "MapsBroker", "lfsvc", "WerSvc", "PcaSvc", "DPS", "WdiServiceHost", "WdiSystemHost",
+    "TabletInputService", "RemoteRegistry", "RetailDemo", "WMPNetworkSvc", "Fax",
+    "diagnosticshub.standardcollector.service", "edgeupdate", "edgeupdatem"
 )
 foreach ($svc in $HeavyServices) {
     if (Get-Service -Name $svc -ErrorAction SilentlyContinue) {
@@ -160,7 +167,12 @@ powercfg -setacvalueindex scheme_current sub_processor CPMAXCORES 100 2>$null
 powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 2>$null
 powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 2>$null
 powercfg -setacvalueindex scheme_current sub_processor PERFBOOSTMODE 2 2>$null
-powercfg -setacvalueindex scheme_current sub_processor IDLEDISABLE 0 2>$null
+# IDLEDISABLE=1 -> core tidak pernah masuk C-state/idle clock, sehingga thread input/render tidak
+# "terbangun terlambat". Ini yang membuat klik terasa instan walau CPU baru saja idle.
+powercfg -setacvalueindex scheme_current sub_processor IDLEDISABLE 1 2>$null
+# Boost policy & EPP ke performa maksimum (diabaikan bila CPU/platform tidak mendukung)
+powercfg -setacvalueindex scheme_current sub_processor PERFBOOSTPOL 100 2>$null
+powercfg -setacvalueindex scheme_current sub_processor PERFEPP 0 2>$null
 powercfg /setactive scheme_current 2>$null
 
 Write-Host "==> [3/10] Expanding Virtual Memory (20 GB Pagefile) & Accelerating Disk I/O..." -ForegroundColor Cyan
@@ -219,6 +231,9 @@ Set-ItemProperty -Path $GamesTaskPath -Name "Priority" -Value 6 -Type DWord -For
 Set-ItemProperty -Path $GamesTaskPath -Name "Scheduling Category" -Value "High" -Type String -Force
 Set-ItemProperty -Path $GamesTaskPath -Name "SFIO Priority" -Value "High" -Type String -Force
 Set-ItemProperty -Path $GamesTaskPath -Name "Background Only" -Value "False" -Type String -Force
+# Clock Rate 10000 = 100% dari clock saat MMCSS aktif; Affinity 0 = semua core boleh dipakai
+Set-ItemProperty -Path $GamesTaskPath -Name "Clock Rate" -Value 10000 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $GamesTaskPath -Name "Affinity" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 
 # DirectX / DXGI Software & WARP Rendering Latency Tweaks
 # NOTE: TdrLevel=0 ("never recover") used to hang the whole desktop forever if a WARP/llvmpipe draw call
@@ -257,6 +272,9 @@ if (Test-SrdpTrue $TuneRendering) {
         "MESA_GLSL_VERSION_OVERRIDE" = "450"
         "MESA_SHADER_CACHE_MAX_SIZE" = "512M"
         "MESA_SHADER_CACHE_DISABLE"  = "false"
+        # Buang overhead validasi error Mesa (tidak perlu saat bermain) & hilangkan vsync di lavapipe
+        "MESA_NO_ERROR"             = "1"
+        "MESA_VK_WSI_PRESENT_MODE"  = "immediate"
     }
     foreach ($key in $RendererEnv.Keys) {
         [Environment]::SetEnvironmentVariable($key, $RendererEnv[$key], "Machine")
@@ -328,6 +346,28 @@ if (Test-Path $DefaultNtUser) {
         & reg add $InputMouse /v SmoothMouseXCurve /t REG_BINARY /d 00000000000000000000000000000000000000000000000000000000000000000000000000000000 /f >$null 2>&1
         & reg add $InputMouse /v SmoothMouseYCurve /t REG_BINARY /d 00000000000000000000000000000000000000000000000000000000000000000000000000000000 /f >$null 2>&1
         & reg add "HKU\SrdpDefault\Control Panel\Cursors" /v CursorShadow /t REG_SZ /d "0" /f >$null 2>&1
+
+        # ---- EXCLUSIVE FULLSCREEN (bypass komposisi DWM) ----------------------------------------------
+        # FSEBehaviorMode=2 memaksa game fullscreen memakai flip-exclusive (bukan borderless compose),
+        # sehingga 1 frame hanya digambar sekali, bukan dikomposisi DWM lalu di-encode RDP.
+        $fse = "HKU\SrdpDefault\System\GameConfigStore"
+        & reg add $fse /v GameDVR_FSEBehaviorMode /t REG_DWORD /d 2 /f >$null 2>&1
+        & reg add $fse /v GameDVR_HonorUserFSEBehaviorMode /t REG_DWORD /d 1 /f >$null 2>&1
+        & reg add $fse /v GameDVR_DXGIHonorFSEWindowsCompatible /t REG_DWORD /d 1 /f >$null 2>&1
+        & reg add $fse /v GameDVR_EFSEFeatureFlags /t REG_DWORD /d 0 /f >$null 2>&1
+
+        # ---- RINGANKAN DELTA RDP ---------------------------------------------------------------------
+        # Wallpaper polos = tile yang dikirim encoder RDP jauh lebih sedikit (khususnya saat AFK).
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v Wallpaper /t REG_SZ /d "" /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v TileWallpaper /t REG_SZ /d "0" /f >$null 2>&1
+        # Izin aplikasi (auto-clicker/macro) merebut foreground tanpa diblokir Focus Assist
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v ForegroundLockTimeout /t REG_DWORD /d 0 /f >$null 2>&1
+
+        # ---- SHUTDOWN/BACKUP LEBIH CEPAT --------------------------------------------------------------
+        # Agar sesi + Atomic Vault selesai sebelum batas keras 6 jam GitHub Actions.
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v AutoEndTasks /t REG_SZ /d "1" /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v WaitToKillAppTimeout /t REG_SZ /d "2000" /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Desktop" /v HungAppTimeout /t REG_SZ /d "2000" /f >$null 2>&1
         [System.GC]::Collect()
         Start-Sleep -Milliseconds 300
         & reg unload "HKU\SrdpDefault" >$null 2>&1
@@ -373,7 +413,10 @@ Set-ItemProperty -Path $TsPolicies -Name "SelectTransport" -Value 0 -Type DWord 
 Set-ItemProperty -Path $TsPolicies -Name "bEnumerateHWBeforeSW" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $TsPolicies -Name "GraphicsProfile" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $TsPolicies -Name "VGOptimization_CaptureFrameRate" -Value ([Math]::Min($targetFps, 60)) -Type DWord -Force -ErrorAction SilentlyContinue
-Set-ItemProperty -Path $TsPolicies -Name "MaxCompressionLevel" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+# MaxCompressionLevel: 0 = "optimize for least memory/CPU", 1 = "least bandwidth", 2 = balanced (default).
+# Di runner 4 vCPU, CPU adalah bottleneck dan bandwidth Tailscale berlimpah -> pilih 0 agar frame tidak
+# tertahan oleh kompresor yang mahal.
+Set-ItemProperty -Path $TsPolicies -Name "MaxCompressionLevel" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $TsPolicies -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $TsPolicies -Name "MaxIdleTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $TsPolicies -Name "MaxConnectionTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
@@ -506,6 +549,37 @@ $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccou
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -Priority 4
 Register-ScheduledTask -TaskName "S-RDP-AfkGuardian" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Force | Out-Null
+
+# ---------------------------------------------------------------------------
+# 1 ms System Timer Resolution keeper (timeBeginPeriod)
+# Windows default ~15.6 ms. Semua sleep/timeout/WaitForSingleObject jadi lebih presisi -> jitter input,
+# frame pacing, dan respons auto-clicker membaik tanpa biaya CPU berarti. Dijaga hidup oleh task SYSTEM.
+# ---------------------------------------------------------------------------
+$TimerResPs1 = @'
+$ErrorActionPreference = "SilentlyContinue"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class SrdpTimer {
+    [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint period);
+    [DllImport("winmm.dll")] public static extern uint timeEndPeriod(uint period);
+}
+"@
+[SrdpTimer]::timeBeginPeriod(1) | Out-Null
+# Tahan proses tetap hidup (permintaan 1 ms hanya berlaku selama proses ini berjalan)
+while ($true) { Start-Sleep -Seconds 600 }
+'@
+$TimerResPath = "$SysScriptsDir\timer-resolution.ps1"
+Set-Content -Path $TimerResPath -Value $TimerResPs1 -Encoding UTF8
+
+$TimerAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TimerResPath`""
+$TimerTrigger = New-ScheduledTaskTrigger -AtStartup
+$TimerPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$TimerSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "S-RDP-TimerResolution" -Action $TimerAction -Trigger $TimerTrigger -Principal $TimerPrincipal -Settings $TimerSettings -Force | Out-Null
+Start-ScheduledTask -TaskName "S-RDP-TimerResolution" -ErrorAction SilentlyContinue
+Write-Host "    Timer resolution 1 ms aktif (S-RDP-TimerResolution)." -ForegroundColor Green
 
 Write-Host "==> [7/10] Configuring User Account & Console Auto-Logon..." -ForegroundColor Cyan
 $SecurePass = ConvertTo-SecureString $RdpPassword -AsPlainText -Force
@@ -875,8 +949,27 @@ $launcherPath = Join-Path $dir "Jalankan-$base-Hemat-CPU.bat"
 Set-Content -Path $launcherPath -Value $launcher -Encoding ASCII
 Write-Host "    Launcher dibuat: $launcherPath" -ForegroundColor Green
 
+# Launcher alternatif: OpenGL lewat GLonD3D12 (mesin WARP Direct3D 12 milik Windows).
+# Untuk game yang fill-rate berat, jalur ini kadang 1.5-2x lebih cepat dari llvmpipe.
+$launcherD3D12 = @"
+@echo off
+title $base (Mode D3D12-WARP - S-RDP)
+set LIBGL_ALWAYS_SOFTWARE=1
+set GALLIUM_DRIVER=d3d12
+set mesa_glthread=true
+set vblank_mode=0
+set MESA_NO_ERROR=1
+cd /d "%~dp0"
+start "" "$exe"
+"@
+$launcherD3D12Path = Join-Path $dir "Jalankan-$base-D3D12.bat"
+Set-Content -Path $launcherD3D12Path -Value $launcherD3D12 -Encoding ASCII
+Write-Host "    Launcher alternatif (D3D12/WARP): $launcherD3D12Path" -ForegroundColor Green
+
 Write-Host ""
 Write-Host "SELESAI! Buka game lewat file 'Jalankan-$base-Hemat-CPU.bat'." -ForegroundColor Cyan
+Write-Host "Kalau versi Hemat-CPU masih berat, coba 'Jalankan-$base-D3D12.bat'" -ForegroundColor Yellow
+Write-Host "(OpenGL lewat WARP Direct3D 12 - sering lebih cepat untuk game fill-rate berat)." -ForegroundColor Yellow
 Write-Host "Kalau masih berat: turunkan resolusi ke 1024x768 / 800x600, matikan" -ForegroundColor Yellow
 Write-Host "Shadow + Anti-Aliasing + V-Sync, dan batasi FPS in-game ke 30." -ForegroundColor Yellow
 Write-Host ""

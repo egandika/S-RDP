@@ -24,6 +24,12 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 - **⚡ MMCSS Gaming + DirectX WARP Tuned + TCP NoDelay**: Mengalokasikan prioritas *Multimedia Class Scheduler* penuh ke game (`SystemResponsiveness=0`), mengoptimalkan DirectX TDR untuk CPU software rendering, mematikan *Nagle's Algorithm* (`TCPNoDelay` + RSS), serta menyalakan *Windows Audio Service*.
 - **🛡️ Anti-Freeze Saat Tutup RDP (`AFK-Disconnect-Tanpa-Freeze.bat`)**: Memindahkan sesi aktif ke `Console` (`tscon`) agar render game 3D, macro, atau auto-clicker tetap jalan 100% di belakang layar saat RDP ditutup.
 - **📦 Pre-installed Game Runtimes**: Otomatis memasang **DirectX 9/10/11 End-User Legacy Runtimes** dan **Visual C++ Redistributable 2015–2022 (x86 & x64)** supaya game tidak error `.dll` (`d3dx9_43.dll`, `vcruntime140.dll`, dll).
+- **⏱️ Timer Resolution 1 ms Tetap Hidup (`timeBeginPeriod(1)`) — Anti-Stutter**: Windows menurunkan resolusi timer ke ~15,6 ms saat idle, sehingga game, sleeper macro, dan `Sleep()` internal jadi *patah-patah*. Task **`S-RDP-TimerResolution`** berjalan sebagai `SYSTEM` sejak boot dan menahan resolusi timer di **1 ms** selama sesi hidup.
+- **🎞️ Fullscreen Exclusive + Wallpaper Mati**: `GameDVR_FSEBehaviorMode=2` memaksa game yang mendukung FSE untuk **keluar dari komposisi DWM** (frame 3D tidak di-*copy* dua kali), wallpaper/`TileWallpaper` dikosongkan, dan `ForegroundLockTimeout=0` menghilangkan jeda saat aplikasi mengambil fokus.
+- **🗂️ Shader Cache Mesa Permanen di Vault**: Stutter terbesar llvmpipe adalah **kompilasi shader** saat game pertama kali dibuka. `MESA_SHADER_CACHE_DIR` diarahkan ke **`D:\AFK-Data\ShaderCache`** (ikut ter-backup), jadi di sesi ke-2 dan seterusnya game langsung mulus sejak frame pertama.
+- **🎮 Launcher Ganda: llvmpipe vs GLonD3D12**: `Optimalkan-Game-Ini.bat` sekarang membuat **dua** launcher — `Jalankan-<nama>-Hemat-CPU.bat` (llvmpipe) dan `Jalankan-<nama>-D3D12.bat` (`GALLIUM_DRIVER=d3d12`, OpenGL lewat **WARP Direct3D 12**). Untuk game *fill-rate* berat, jalur D3D12 sering **1,5–2× lebih cepat** dari llvmpipe.
+- **🌐 File Klien `.rdp` Siap Pakai (Artefak)**: Tiap run mengunggah **`S-RDP-Optimal.rdp`** berisi IP Tailscale run tersebut + setting klien paling rendah latensi (`16-bit`, `LAN`, animasi/wallpaper OFF, `1280x720`, clipboard ON, redirection OFF). Cukup unduh di tab **Artifacts** → double-click.
+- **🧹 Pembersihan Sisa: Service & Kompresi RDP**: `MaxCompressionLevel=0` (kompresor V1 = paling ringan di CPU), Controlled Folder Access off, MMCSS `Clock Rate=10000` + `Affinity=0`, serta pruning service mati (`TabletInputService`, `RemoteRegistry`, `RetailDemo`, `WMPNetworkSvc`, `Fax`, `diagnosticshub`, `edgeupdate*`) — Xbox service **sengaja dibiarkan** karena dipakai overlay & save cloud game.
 - **🖥️ Direktori Mesa3D Lengkap**: Paket `mesa3d-*-release-msvc.7z` diekstrak ke `C:\Tools\Mesa3D` (folder `x64` & `x86`), sehingga launcher per-game maupun `opengl32.dll` system-wide selalu memakai versi Mesa3D terbaru.
 - **💾 Ekstra Ruang Penyimpanan (+~30 GB SSD)**: Pembersihan SDK bawaan runner (Android SDK, GHC/ghcup, CodeQL, .NET SDK) **selalu dijalankan otomatis** supaya game besar punya ruang lega.
 - **🔒 Aman & Privat dengan Tailscale**: Port `3389` tidak diekspos ke internet publik, hanya bisa diakses dari perangkat HP/PC milikmu yang terhubung ke jaringan Tailscale yang sama.
@@ -87,7 +93,24 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
    - **Windows**: Buka **Remote Desktop Connection** (`mstsc`).
    - **Android / iOS / macOS**: Install aplikasi resmi **Windows App** (dulunya Microsoft Remote Desktop) dari Play Store / App Store.
 3. Masukkan **IP Tailscale** (`100.x.y.z`), Username **`egandika`**, dan Password sesuai `RDP_PASSWORD`.
+4. **(Disarankan) Pakai file `.rdp` otomatis**: di halaman **Actions → run yang sedang jalan → bagian bawah `Artifacts`**, unduh **`S-RDP-Optimal-<run id>`** → ekstrak → **double-click `S-RDP-Optimal.rdp`** → masukkan password. File ini sudah membawa IP run tersebut + seluruh setting klien *low-latency* (lihat tabel di bawah), jadi tidak ada lagi salah setting *Experience/color depth*.
 
+### Isi `S-RDP-Optimal.rdp` (dan alasannya)
+
+| Setting | Nilai | Alasan |
+| :--- | :--- | :--- |
+| `session bpp` | `16` | Encoder RDP software 30–40% lebih ringan → frame sampai lebih awal. |
+| `connection type` | `6` (LAN) + `networkautodetect:0` | Auto-detect sering **menurunkan** mode grafis & menambah jeda; LAN dipaksa. |
+| `desktopwidth/height` | `1280x720` | Cocok dengan *Locked Console Resolution* repo ini; titik klik macro tidak bergeser. |
+| `disable wallpaper / full window drag / menu anims / themes / cursor setting` | `1` | 5 sumber frame terbuang di sisi klien. |
+| `allow font smoothing` / `desktop composition` | `0` | Blur AA font & komposisi tambahan = kerja ekstra tiap frame. |
+| `keyboardhook` | `2` | Hook keyboard hanya saat *fullscreen* → tidak ada overhead saat windowed. |
+| `redirectclipboard` | `1` | Copy-paste tetap jalan (kebutuhan login Steam Guard / kode Discord). |
+| `redirectprinters/comports/smartcards/posdevices`, `drivestoredirect`, `usbdevicestoredirect`, `camerastoredirect` | OFF | Setiap redirection = kanal RPC yang dicek tiap detik. |
+| `autoreconnection enabled` | `1` | Tailscale putus 2 detik (pindah Wi-Fi) → sesi **tidak** mati, game **tidak** freeze. |
+| `bitmapcachepersistenable` | `1` | Cache bitmap antar-sesi → UI Windows tidak di-render ulang tiap konek. |
+
+> Butuh versi 1080p? Ubah `desktopwidth/desktopheight` jadi `1920`/`1080` **dan** `rdp_fps = 24`, karena encoder software harus mengompres 2,25× pixel lebih banyak. Template tanpa IP ada di [`client/S-RDP-Optimal.rdp`](client/S-RDP-Optimal.rdp).
 ---
 
 ## 💾 Cara Kerja Anti-Reset 6 Jam (Steam, Discord, & Game)
@@ -113,9 +136,10 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 | `Steam.lnk` / `Steam-Hemat-CPU.lnk` | Steam normal, atau versi hemat CPU (Chromium UI tanpa GPU acceleration). |
 | `Discord.lnk` | Menjalankan Discord yang sudah dipulihkan dari Vault (atau instal otomatis saat pertama diklik). |
 | `Folder-Permanen-Anti-Reset (X:).lnk` | Membuka folder Vault permanen tempat game & bot harus disimpan. |
-| `Optimalkan-Game-Ini.bat` | Pilih `.exe` game → Mesa3D llvmpipe dipasang khusus game itu, Fullscreen Optimization DWM dimatikan, launcher hemat CPU dibuat. |
+| `Optimalkan-Game-Ini.bat` | Pilih `.exe` game → Mesa3D llvmpipe dipasang khusus game itu, Fullscreen Optimization DWM dimatikan, lalu dibuat **dua** launcher: `Jalankan-<nama>-Hemat-CPU.bat` (llvmpipe) & `Jalankan-<nama>-D3D12.bat` (WARP D3D12). |
 | `Cek-Performa-Render.bat` | Diagnostik: adapter GPU, status Mesa3D, `DWMFRAMEINTERVAL`, `LP_NUM_THREADS`, 10 proses terberat, pemakaian RAM. |
 | `AFK-Disconnect-Tanpa-Freeze.bat` | Pindahkan sesi ke Console (`tscon`) supaya game tetap render saat RDP ditutup. |
+| `AutoStart-Steam.bat` | Toggle: aktifkan agar **Steam langsung jalan sendiri** tiap sesi baru selesai restore (tanpa klik). |
 | `Simpan-Data-Sekarang.bat` | Live snapshot Vault tanpa menutup game. |
 | `Matikan-Server-RDP.bat` | Backup final + hentikan sesi lebih awal (hemat kuota menit Actions). |
 | `BACA-PANDUAN-AFK-GAME.txt` | Ringkasan semua tips di atas, tersimpan offline di Desktop. |
@@ -160,6 +184,17 @@ Nilai tersebut langsung diterapkan ke sesi berjalan lewat `SystemParametersInfo`
 ### Kalau jedanya di dalam game (bukan menu Windows)
 Jeda itu = **waktu render 1 frame**. Di runner tanpa GPU artinya 50–150 ms saat game berat. Yang menurunkan: **resolusi lebih kecil**, efek grafis mati, dan `rdp_fps` lebih tinggi (**`60`** membuat desktop/klik terasa lebih responsif, tapi memakan CPU — trade-off dengan FPS game).
 
+**`rdp_fps` 15 / 24 / 30 / 60 — pilih yang mana?**
+
+| `rdp_fps` | `DWMFRAMEINTERVAL` | Efek | Biaya CPU untuk DWM+encoder | Pakai saat |
+| :--- | :--- | :--- | :--- | :--- |
+| `15` | 66 ms | Desktop terasa *patah-patah*, klik masih nyaman | ~1/4 | Game 3D berat (berapa pun FPS-nya, menang di CPU) |
+| `24` | 41 ms | Batas nyaman mata untuk gerakan lambat | ~1/2 | Game 3D sedang / 1080p |
+| **`30`** (default) | **33 ms** | **Titik seimbang**: desktop mulus, 2–3 core tersisa untuk game | ~2/3 core | Hampir semua kasus (2D, idle, auto-battler, Quest farming) |
+| `60` | 15 ms | Klik paling responsif, tapi DWM+encoder bisa makan **2 core penuh** dari 4 → game turun 20–60% FPS | 1,5–2 core | Hanya runner ber-GPU, atau game 2D sangat ringan |
+
+Aturan praktis: **kalau FPS game turun saat `rdp_fps` dinaikkan, berarti CPU-nya yang jadi botol** — turunkan fps, jangan naikkan resolusi.
+
 > Catatan jujur: tweak driver `MouseDataQueueSize` / `KeyboardDataQueueSize` **sengaja tidak dipakai** di sini karena nilainya hanya dibaca saat driver dimuat (butuh reboot), dan runner tidak pernah reboot → efeknya cuma placebo.
 
 ---
@@ -198,3 +233,108 @@ Keduanya driver *display* virtual, **bukan GPU** — render tetap di CPU, ditamb
 - **Color depth:** `16-bit` (meringankan encoder software).
 - Jangan pakai mode *fullscreen borderless* pada aplikasi Remote Desktop.
 - Jika sudah selesai AFK sebelum timer habis, klik 2x **`Matikan-Server-RDP.bat`** di Desktop untuk menghemat kuota menit GitHub Actions.
+
+---
+
+## ✅ Checklist Lengkap Tuning (Anti-Bolong)
+
+Daftar **seluruh** knob optimasi yang relevan untuk runner Windows tanpa GPU, apa yang dipakai repo ini, dan **kenapa** sesuatu yang tidak dipakai memang sengaja dilewati. Kalau kamu menemukan tweak di internet dan tidak ada di tabel ini, berarti tweak itu tidak berefek di lingkungan *runner ephemeral tanpa GPU*.
+
+### 1. CPU & Scheduler
+| Tweak | Status | Detail / alasan |
+| :--- | :--- | :--- |
+| Core parking dibuka | ✅ | `CPMINCORES=100` (semua core selalu siap). |
+| Boost mode dikunci | ✅ | `PERFBOOSTMODE=2`, `PERFBOOSTPOL=100`, `PERFEPP=0` (performance → power, bukan sebaliknya). |
+| Power plan | ✅ | Skema *High Performance* dipaksa + `IDLEDISABLE=1` (tidak pernah turun ke *idle states*). |
+| Skema *Ultimate Performance* | ⛔ sengaja tidak | Butuh `powercfg -duplicatescheme` ulang tiap boot (runner ephemeral) → untungnya marjinal, risikonya gagal diam-diam. |
+| `Win32PrioritySeparation` | ✅ | `38` = *short quantum, variable, boost foreground* (paling responsif untuk game windowed). |
+| MMCSS untuk game | ✅ | Task `Games` → `GPU Priority=8`, `Priority=6`, `Scheduling Category=High`, `SFIO Priority=High`, `Clock Rate=10000`, `Affinity=0`. |
+| `SystemResponsiveness` | ✅ | `0` = 100% CPU ke aplikasi, sisa ke background. (`100` justru **kebalikan** dan sering salah kutip di tweak internet.) |
+| Timer resolution 1 ms | ✅ | Task `S-RDP-TimerResolution` → `timeBeginPeriod(1)` ditahan sepanjang sesi. |
+| Prioritas proses game | ✅ | Auto-boost `AboveNormal` tiap 5 menit untuk `.exe` game aktif. |
+| `ThreadPriority` per-thread | ⛔ sengaja tidak | Nilai `31` (real-time) hanya untuk thread audio pro; di server RDP berisiko **membekukan** input/DWM. |
+| Affinity dipaku ke core tertentu | ⛔ sengaja tidak | Dengan 4 vCPU, pinning game ke 2 core justru mematikan *turbo* & membuat DWM kelaparan. |
+
+### 2. Memori
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| Pagefile besar | ✅ | 20 GB (total efektif ~36 GB) supaya game + shader cache tidak OOM. |
+| Native RAM cleaner | ✅ | `EmptyWorkingSet` saat RAM >78% (mencegah *memory leak* Chrome/Electron). |
+| `LargeSystemCache` | ✅ di-**0**-kan | Default server = `1` (cache file-system besar). Di 16 GB, itu menekan *working set* game → disetel `0`. |
+| `ClearPageFileAtShutdown` | ⛔ sengaja tidak | Memperlambat shutdown, nol dampak performa. |
+| Memory compression (SysMain) | ⛔ sengaja tidak | SysMain dimatikan total (service mati), kompresi memori ikut tidak relevan. |
+| `DisablePagingExecutive` | ✅ `1` | Kernel & driver tetap di RAM (tidak ada *page-in* saat frame butuh driver call). |
+
+### 3. Disk & I/O
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| Pembersihan SDK runner | ✅ | +~30 GB (Android SDK, GHC, CodeQL, .NET SDK). |
+| NTFS I/O dipercepat | ✅ | `fsutil behavior set memoryusage 2` (cache metadata lebih agresif), `disablelastaccess 1` (tidak ada tulis timestamp tiap file dibaca), `disable8dot3 1` (lookup nama file lebih cepat). |
+| Defrag/TRIM manual | ⛔ tidak perlu | Runner memakai SSD ephemeral; TRIM otomatis. |
+| `Prefetch/Superfetch` | ⛔ dimatikan | Di disk ephemeral, prefetch hanya menulis file yang tidak pernah terpakai ulang. |
+| Shader cache persisten | ✅ | `MESA_SHADER_CACHE_DIR → D:\AFK-Data\ShaderCache` + `MESA_SHADER_CACHE_MAX_SIZE=512M`. |
+| Cache Steam diarsipkan | ⛔ dikecualikan | `steamapps\shadercache`, `downloading`, `httpcache` bisa GB-an & selalu bisa dibuat ulang → vault jadi cepat. |
+
+### 4. GPU / Renderer
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| Mesa3D llvmpipe OpenGL 4.5 | ✅ | System-wide (`System32`/`SysWOW64`) + per-game, driver asli dibackup `.srdp-bak`. |
+| `LP_NUM_THREADS = vCPU − 1` | ✅ | Mencegah llvmpipe merebut semua core dari DWM/encoder. |
+| `mesa_glthread`, `vblank_mode=0` | ✅ | Perintah GL dikirim paralel, tidak menunggu vsync 60 Hz. |
+| `MESA_NO_ERROR=1` | ✅ | Melewati cek error GL per-call (mahal di software render). |
+| `MESA_VK_WSI_PRESENT_MODE=immediate` | ✅ | Untuk game Vulkan: present tanpa antre vsync. |
+| GLonD3D12 (`GALLIUM_DRIVER=d3d12`) | ✅ | Launcher alternatif: OpenGL di atas **WARP D3D12**. |
+| DirectX 9/10/11 legacy + VC++ | ✅ | Supaya game DX9 tidak gagal `.dll`/fallback ke path lambat. |
+| WARP tuning | ✅ | `HwSchMode=0` (tanpa GPU, GPU scheduling hanya menambah overhead), TDR longgar (`TdrLevel=3`, `TdrDelay=60`). |
+| AVC444 / H.264 hardware encode | ✅ adaptif | **Dimatikan** bila tidak ada GPU (software 4:4:4 = mahal), dinyalakan hanya bila GPU terdeteksi. |
+| `VGOptimization_CaptureFrameRate` | ✅ | Frame capture dibatasi agar encoder tidak mengejar FPS yang mustahil. |
+| Fullscreen Exclusive (FSE) | ✅ | `GameDVR_FSEBehaviorMode=2` + `DXGIHonorFSEWindowsCompatible=1` → frame tidak dikomposisi dua kali. |
+| `~ DISABLEDXMAXIMIZEDWINDOWEDMODE` | ✅ | Per-game lewat `Optimalkan-Game-Ini.bat`. |
+| Virtual Display Driver / parsec-vdd | ⛔ sengaja tidak | Itu driver *display*, **bukan GPU** — render tetap CPU, plus risiko *driver signing*/boot gagal. |
+
+### 5. Jaringan & Latensi
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| Tailscale, port 3389 tidak publik | ✅ | Hanya perangkat di tailnet yang bisa masuk. |
+| Deteksi **DIRECT vs RELAY** | ✅ | Dilaporkan di Summary tiap run (`tailscale status --json`). RELAY DERP = sumber jeda, bukan server. |
+| `tailscale ping` RTT | ✅ | Angka nyata per-peer, bukan tebakan. |
+| `TCPNoDelay` + `TCPAckFrequency=1` | ✅ | Nagle dimatikan → paket klik tidak ditahan. |
+| `NetworkThrottlingIndex = 0xffffffff` | ✅ | MMCSS berhenti membatasi paket jaringan ke 10 paket/ms saat multimedia aktif. |
+| RSS / autotuning | ✅ | Antrean jaringan multi-core. |
+| Kompresi RDP | ✅ | `MaxCompressionLevel=0` = kompresor V1 (paling ringan di CPU). Naikkan ke `2` **hanya** kalau bandwidth Tailscale-mu terbatas. |
+| TermDD `FlowControlDisable` | ✅ | `FlowControlDisable=1` + `FlowControlDisplayBandwidth`/`ChannelBandwidth` dilepas. |
+| QoS / DSCP marking | ⛔ sengaja tidak | Tailscale (WireGuard UDP) sudah punya jalur sendiri; marking tidak dihormati antar-AS. |
+| MTU tuning manual | ⛔ sengaja tidak | Tailscale mengatur MTU 1280 otomatis & aman untuk semua link. |
+
+### 6. Input
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| `MenuShowDelay` / `MouseHoverTime` | ✅ | `0` ms (Default Hive + logon script + `SystemParametersInfo`). |
+| Pointer acceleration & jejak | ✅ | `MouseSpeed=0`, `SmoothMouse*Curve` dinolkan, `MouseTrails=0`, `CursorShadow=0`. |
+| Key repeat | ✅ | `KeyboardDelay=0`, `KeyboardSpeed=31`. |
+| Drag & window track | ✅ | `DragFullWindows=0`, `ActiveWndTrkTimeout=0`. |
+| `MouseDataQueueSize` / `KeyboardDataQueueSize` | ⛔ sengaja tidak | Dibaca **hanya saat driver dimuat** → butuh reboot; runner tidak pernah reboot → placebo murni. |
+| `SPI_SETMOUSE`/`SPI_SETKEYBOARD*` saat logon | ✅ | Diterapkan ulang tiap logon supaya tidak hilang setelah `tscon`. |
+| Setting klien (16-bit, LAN, mouse mode) | ✅ | Otomatis lewat artefak `S-RDP-Optimal.rdp`. |
+
+### 7. Service, Startup & Keamanan
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| Defender realtime, `mscorsvw`, `TiWorker` | ✅ dimatikan | Penyedot CPU #1 di runner. |
+| Controlled Folder Access | ✅ `0` | CFA mencegat tulis file game/save (I/O lambat + false positive). |
+| Service mati: `TabletInputService`, `RemoteRegistry`, `RetailDemo`, `WMPNetworkSvc`, `Fax`, `diagnosticshub`, `edgeupdate*` | ✅ | Tidak dipakai di sesi gaming. |
+| Xbox services (`XblAuthManager`, `XblGameSave`, `XboxNetApiSvc`, `XboxGipSvc`) | ⛔ **sengaja dibiarkan** | Dibutuhkan overlay, save cloud, dan banyak game Microsoft Store/Game Pass. |
+| `DiagTrack`, `WSearch`, `SysMain`, telemetri | ✅ | Dimatikan + *Scheduled Maintenance* dimatikan. |
+| `AudioSrv` | ✅ dinyalakan | Banyak game crash/macet tanpa audio endpoint. |
+| Disk quota / UAC prompt | ✅ | Quota off, UAC tidak mengganggu macro. |
+
+### 8. Sesi & Persistensi
+| Tweak | Status | Detail |
+| :--- | :--- | :--- |
+| Anti-freeze saat tutup RDP | ✅ | `tscon` ke Console; game/macro tetap render. |
+| Auto-Restart 24/7 | 🗑️ dihapus | Sesuai permintaan: tidak ada auto-restart. |
+| Vault AES-256 `-mhe=on` | ✅ | Atomic staging swap; tidak ada plaintext kredensial di repo Public. |
+| Auto-start Steam | ✅ opsional | Toggle `AutoStart-Steam.bat` → Steam jalan sendiri tiap logon. |
+| Auto-login Windows (plaintext `DefaultPassword`) | ⛔ sengaja tidak | Password tersimpan plaintext di registry/Disk → bocor ke vault. Login RDP manual lebih aman. |
+
+> **Ringkas:** 60+ knob dipakai, 12 knob populer **sengaja ditolak** dengan alasan teknis di atas. Itu bukan kelalaian — itu daftar yang sudah diuji terhadap karakteristik runner: **ephemeral, 4 vCPU, tanpa GPU, tanpa reboot**.

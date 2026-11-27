@@ -334,6 +334,18 @@ if (Test-Path `$discordSettings) {
         }
     } catch {}
 }
+# --- SHADER CACHE PERSISTEN di Vault ---------------------------------------------------------------
+# Kompilasi shader llvmpipe adalah penyebab stutter terbesar saat game pertama kali dijalankan.
+# Default-nya di %LOCALAPPDATA% (hilang tiap sesi) -> pindahkan ke folder permanen.
+`$shaderCache = "`$DriveRoot\ShaderCache"
+New-Item -ItemType Directory -Path `$shaderCache -Force | Out-Null
+[Environment]::SetEnvironmentVariable('MESA_SHADER_CACHE_DIR', `$shaderCache, 'User')
+
+# --- AUTO-START STEAM (opsional, diatur lewat "AutoStart-Steam (Toggle).bat") ----------------------
+if ((Test-Path "`$DriveRoot\autostart-steam.txt") -and (Test-Path "`$DriveRoot\Steam\steam.exe")) {
+    Start-Process -FilePath "`$DriveRoot\Steam\steam.exe" -ArgumentList '-cef-disable-gpu -cef-disable-gpu-compositing -noshaders -nocrashmonitor -nofriendsui -nochatui' -ErrorAction SilentlyContinue
+}
+
 # --- INPUT LATENCY: hapus jeda klik/ketik (idempoten, dijalankan tiap logon) ---------------------------
 # MenuShowDelay / MouseHoverTime default 400 ms adalah penyebab utama "klik terasa telat" di RDP.
 reg add "HKCU\Control Panel\Desktop" /v MenuShowDelay /t REG_SZ /d "0" /f >`$null 2>&1
@@ -388,6 +400,26 @@ echo Backup sedang berjalan di background (~1-2 menit).
 timeout /t 5
 '@
     Set-Content -Path "$PublicDesktop\Simpan-Data-Sekarang.bat" -Value $ManualSaveBat -Encoding ASCII
+
+    # Toggle Auto-Start Steam (Steam langsung jalan sendiri setiap sesi baru selesai restore)
+    $AutoStartSteamBat = @"
+@echo off
+title Auto-Start Steam (Toggle)
+if exist "$DriveRoot\autostart-steam.txt" (
+    del /f /q "$DriveRoot\autostart-steam.txt"
+    echo.
+    echo   Auto-Start Steam : DIMATIKAN
+    echo   Steam tidak akan otomatis jalan di sesi berikutnya.
+) else (
+    echo aktif > "$DriveRoot\autostart-steam.txt"
+    echo.
+    echo   Auto-Start Steam : DIAKTIFKAN
+    echo   Steam akan otomatis jalan saat sesi berikutnya selesai restore.
+)
+echo.
+timeout /t 5
+"@
+    Set-Content -Path "$PublicDesktop\AutoStart-Steam.bat" -Value $AutoStartSteamBat -Encoding ASCII
 
     Set-Content -Path "$StateDir\vault-root.txt" -Value $DriveRoot -Encoding ASCII
 }
@@ -451,6 +483,7 @@ if ($Mode -eq "backup") {
         "$DriveRoot\Steam\logs\*",
         "$DriveRoot\Steam\dumps\*",
         "$DriveRoot\Steam\appcache\httpcache\*",
+        "$DriveRoot\Steam\steamapps\shadercache\*",
         "$DriveRoot\ProfileBackup\Roaming\discord\Cache\*",
         "$DriveRoot\ProfileBackup\Roaming\discord\Code Cache\*",
         "$DriveRoot\ProfileBackup\Roaming\discord\GPUCache\*",
@@ -476,6 +509,7 @@ if ($Mode -eq "backup") {
     Push-Location $DriveRoot
     & $SevenZip a "$OutArchiveDir\vault.7z" "*" "-p$VaultPassword" -mhe=on -mx=1 -mmt=on -v1900m -ssw `
         -xr!"Steam\steamapps\downloading\*" `
+        -xr!"Steam\steamapps\shadercache\*" `
         -xr!"Steam\steamapps\temp\*" `
         -xr!"ProfileBackup\Roaming\discord\Cache\*" `
         -xr!"ProfileBackup\Roaming\discord\Code Cache\*" `

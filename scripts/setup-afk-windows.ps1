@@ -692,32 +692,125 @@ if (Test-SrdpTrue $InstallMesa3D) {
 
         # Optional system-wide deployment: replaces the inbox OpenGL 1.1 software driver (which is what makes
         # old OpenGL games/emulators refuse to start or render at single digit FPS on a GPU-less VM).
+        #
+        # PENTING: System32\opengl32.dll dimiliki "NT SERVICE\TrustedInstaller" (Windows Resource Protection),
+        # jadi Administrator pun TIDAK bisa menimpanya langsung -> error:
+        #     "Could not deploy Mesa3D: Access to the path 'C:\Windows\System32\opengl32.dll' is denied."
+        # Solusinya (sama seperti systemwidedeploy.cmd milik mesa-dist-win): backup -> takeown + icacls -> copy -> verifikasi SHA256.
         if (Test-SrdpTrue $MesaSystemWide) {
-            $deployMap = @(
-                @{ Source = (Join-Path $mesaDir "x64"); Target = (Join-Path $env:SystemRoot "System32") },
-                @{ Source = (Join-Path $mesaDir "x86"); Target = (Join-Path $env:SystemRoot "SysWOW64") }
-            )
-            $dllNames = @("opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "dxil.dll", "libEGL.dll", "libGLESv2.dll")
-            $deployed = 0
-            foreach ($map in $deployMap) {
-                if (-not (Test-Path $map.Source)) { continue }
-                if (-not (Test-Path $map.Target)) { continue }
-                foreach ($dll in $dllNames) {
-                    $srcDll = Join-Path $map.Source $dll
-                    if (-not (Test-Path $srcDll)) { continue }
-                    $dstDll = Join-Path $map.Target $dll
-                    if ((Test-Path $dstDll) -and -not (Test-Path "$dstDll.srdp-bak")) {
-                        Copy-Item -Path $dstDll -Destination "$dstDll.srdp-bak" -Force -ErrorAction SilentlyContinue
-                    }
-                    Copy-Item -Path $srcDll -Destination $dstDll -Force -ErrorAction SilentlyContinue
-                    if (Test-Path $dstDll) { $deployed++ }
-                }
+            $MesaDeployPs1 = @'
+<#
+  Deploy Mesa3D (llvmpipe) sebagai OpenGL system-wide: System32 (64-bit) + SysWOW64 (32-bit).
+  Kenapa perlu skrip ini: file System32/SysWOW64 milik TrustedInstaller (WRP), jadi copy biasa selalu
+  ditolak dengan "Access to the path 'C:\Windows\System32\opengl32.dll' is denied".
+  Urutan: backup asli (*.srdp-bak) -> takeown + icacls -> copy -> verifikasi SHA256 -> ACL sistem dipulihkan.
+  Exit code 0 = minimal 1 DLL terpasang, 2 = gagal.
+#>
+param(
+    [string]$MesaDir = 'C:\Tools\Mesa3D',
+    [string[]]$DllNames = @('opengl32.dll', 'libgallium_wgl.dll', 'libglapi.dll', 'dxil.dll')
+)
+$ErrorActionPreference = 'Continue'
+$pairs = @(
+    @{ Arch = 'x64'; Source = (Join-Path $MesaDir 'x64'); Target = (Join-Path $env:SystemRoot 'System32') },
+    @{ Arch = 'x86'; Source = (Join-Path $MesaDir 'x86'); Target = (Join-Path $env:SystemRoot 'SysWOW64') }
+)
+$okCount = 0
+$badCount = 0
+foreach ($pair in $pairs) {
+    if (-not (Test-Path $pair.Source)) {
+        Write-Host ("    [lewati] paket {0} tidak ada di {1}" -f $pair.Arch, $pair.Source)
+        continue
+    }
+    foreach ($dll in $DllNames) {
+        $srcDll = Join-Path $pair.Source $dll
+        if (-not (Test-Path $srcDll)) { continue }
+        $dstDll = Join-Path $pair.Target $dll
+        try {
+            # 1) Simpan driver asli sekali saja
+            if ((Test-Path $dstDll) -and -not (Test-Path "$dstDll.srdp-bak")) {
+                Copy-Item -LiteralPath $dstDll -Destination "$dstDll.srdp-bak" -Force -ErrorAction Stop
             }
-            if ($deployed -gt 0) {
-                Write-Host "    System-wide OpenGL upgraded: $deployed DLL terpasang (backup asli: *.srdp-bak)." -ForegroundColor Green
+            # 2) Uji tulis; kalau ditolak (file milik TrustedInstaller) -> ambil alih kepemilikan
+            $takeover = $false
+            if (Test-Path $dstDll) {
+                try {
+                    $fs = [System.IO.File]::Open($dstDll, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                    $fs.Close()
+                } catch { $takeover = $true }
+            }
+            if ($takeover) {
+                & takeown.exe /f $dstDll /a 2>&1 | Out-Null
+                & icacls.exe $dstDll /grant '*S-1-5-32-544:(F)' 2>&1 | Out-Null
+            }
+            # 3) Copy + verifikasi hash (jangan percaya sekadar "file-nya ada")
+            Copy-Item -LiteralPath $srcDll -Destination $dstDll -Force -ErrorAction Stop
+            $srcHash = (Get-FileHash -LiteralPath $srcDll -Algorithm SHA256).Hash
+            $dstHash = (Get-FileHash -LiteralPath $dstDll -Algorithm SHA256).Hash
+            if ($srcHash -ne $dstHash) { throw 'hash berbeda setelah penyalinan' }
+            # 4) Kembalikan hak akses standar sistem (SYSTEM penuh, Users baca-jalan)
+            if ($takeover) {
+                & icacls.exe $dstDll /grant '*S-1-5-18:(F)' 2>&1 | Out-Null
+                & icacls.exe $dstDll /grant '*S-1-5-32-545:(RX)' 2>&1 | Out-Null
+            }
+            $okCount++
+            Write-Host ("    [OK]    {0,-22} -> {1}" -f $dll, $pair.Target) -ForegroundColor Green
+        } catch {
+            $badCount++
+            Write-Host ("    [GAGAL] {0,-22} {1}" -f $dll, $_.Exception.Message) -ForegroundColor Yellow
+        }
+    }
+}
+Write-Host ''
+if ($okCount -gt 0) {
+    Write-Host ("    Mesa3D system-wide: {0} DLL terpasang, {1} gagal. Backup driver asli: *.srdp-bak" -f $okCount, $badCount) -ForegroundColor Green
+    exit 0
+}
+Write-Host '    Mesa3D system-wide GAGAL total. TIDAK fatal: Mesa per-game tetap jalan normal.' -ForegroundColor Yellow
+Write-Host '    Jalankan "Pasang-Mesa-System-Wide.bat" di Desktop setelah login (saat opengl32 tidak terkunci).' -ForegroundColor Yellow
+exit 2
+'@
+            $MesaDeployPath = Join-Path $SysScriptsDir "deploy-mesa-systemwide.ps1"
+            Set-Content -Path $MesaDeployPath -Value $MesaDeployPs1 -Encoding UTF8
+
+            & $MesaDeployPath -MesaDir $mesaDir
+
+            # Verifikasi ulang dari sisi pemanggil (tidak bergantung pada exit code anak skrip):
+            # hash System32\opengl32.dll harus identik dengan DLL Mesa3D.
+            $sysGlDll  = Join-Path $env:SystemRoot "System32\opengl32.dll"
+            $mesaGlDll = Join-Path $mesaDir "x64\opengl32.dll"
+            $systemWideOk = $false
+            if ((Test-Path $sysGlDll) -and (Test-Path $mesaGlDll)) {
+                $systemWideOk = ((Get-FileHash -LiteralPath $sysGlDll -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $mesaGlDll -Algorithm SHA256).Hash)
+            }
+            if ($systemWideOk) {
+                Write-Host "    System-wide OpenGL: Mesa3D AKTIF (takeown+icacls, hash SHA256 terverifikasi)." -ForegroundColor Green
             } else {
-                Write-Warning "    System-wide deployment tidak menemukan DLL Mesa3D (periksa struktur arsip)."
+                Write-Warning "    System-wide OpenGL belum terpasang (lihat alasan [GAGAL] di atas)."
+                Write-Warning "    Ini TIDAK fatal: game tetap dapat Mesa3D lewat 'Optimalkan-Game-Ini.bat' (per-game)."
             }
+
+            # Tool Desktop untuk mencoba ulang kapan saja (mis. opengl32.dll sempat dipakai proses lain).
+            $MesaRetryBat = @"
+@echo off
+title Pasang Mesa3D System-Wide
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
+echo ========================================================
+echo   PASANG MESA3D SEBAGAI OPENGL SYSTEM-WIDE
+echo ========================================================
+echo File asli System32 dicadangkan sebagai *.srdp-bak.
+echo.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$MesaDeployPath" -MesaDir "$mesaDir"
+echo.
+echo Kalau tetap gagal, pakai "Optimalkan-Game-Ini.bat" - Mesa per-game
+echo hasilnya sama untuk game tersebut dan tidak butuh akses System32.
+pause
+"@
+            Set-Content -Path "$env:PUBLIC\Desktop\Pasang-Mesa-System-Wide.bat" -Value $MesaRetryBat -Encoding ASCII
         }
     } catch {
         Write-Warning "    Could not deploy Mesa3D: $_"
@@ -1022,10 +1115,19 @@ if (Test-Path $glDll) {
     $ver = (Get-Item $glDll).VersionInfo
     Write-Host ("    opengl32.dll : {0} / {1}" -f $ver.FileVersion, $ver.CompanyName)
 }
-if (Test-Path "$glDll.srdp-bak") {
-    Write-Host "    System-wide Mesa3D : AKTIF (backup driver asli tersimpan)" -ForegroundColor Green
+# Verifikasi sebenarnya: hash System32\opengl32.dll harus SAMA dengan DLL Mesa3D.
+# (Hanya cek keberadaan "*.srdp-bak" tidak cukup - backup bisa ada walau penggantian gagal.)
+$mesaRefDll = "C:\Tools\Mesa3D\x64\opengl32.dll"
+$glActive = $false
+if ((Test-Path $glDll) -and (Test-Path $mesaRefDll)) {
+    $glActive = ((Get-FileHash -LiteralPath $glDll -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $mesaRefDll -Algorithm SHA256).Hash)
+}
+if ($glActive) {
+    Write-Host "    System-wide Mesa3D : AKTIF (opengl32.dll = Mesa3D, hash cocok)" -ForegroundColor Green
+} elseif (Test-Path "$glDll.srdp-bak") {
+    Write-Host "    System-wide Mesa3D : BELUM tergantikan - jalankan Pasang-Mesa-System-Wide.bat" -ForegroundColor Yellow
 } else {
-    Write-Host "    System-wide Mesa3D : belum/tidak aktif" -ForegroundColor Yellow
+    Write-Host "    System-wide Mesa3D : belum aktif (Mesa per-game via Optimalkan-Game-Ini.bat tetap jalan)" -ForegroundColor Yellow
 }
 if (Test-Path "C:\Tools\Mesa3D\x64") { Write-Host "    Paket Mesa3D       : C:\Tools\Mesa3D (OK)" -ForegroundColor Green }
 foreach ($v in @("LP_NUM_THREADS", "GALLIUM_DRIVER", "mesa_glthread", "vblank_mode", "MESA_GL_VERSION_OVERRIDE")) {

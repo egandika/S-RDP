@@ -16,7 +16,7 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 - **🔥 Kill 70% Background CPU Hogs (Idle CPU ~1–3%)**: Mematikan paksa penyedot CPU bawaan runner GitHub (*Windows Defender Real-Time Scan `MsMpEng.exe`*, *`.NET Runtime Optimization mscorsvw.exe`*, *`TiWorker`*, *`CompatTelRunner`*, dan *Scheduled Maintenance*) sehingga 100% tenaga 4 vCPU AMD EPYC (3.24+ GHz Boost) murni dipakai oleh game.
 - **🚀 CPU Core Unparking + Auto Game Priority Booster**: Membuka seluruh *CPU Core Parking* (`CPMINCORES=100%`), mengunci *Boost Mode* di 100%, serta otomatis menaikkan prioritas proses `.exe` game aktif ke `AboveNormal` setiap 5 menit.
 - **🖥️ RDP Frame Pacing Adaptif + TermDD FlowControl Dilepas**: `DWMFRAMEINTERVAL` dihitung otomatis dari opsi **`rdp_fps`** (default **30 FPS** — angka paling seimbang untuk render CPU; `60` hanya berguna kalau runner punya GPU), plus `FlowControlDisable=1`, `VGOptimization_CaptureFrameRate`, dan `MaxCompressionLevel` supaya layar RDP tidak lagi terasa seperti *slideshow*. Mode **AVC444/H.264 hardware encode hanya dinyalakan bila benar-benar ada GPU** (lihat [kenapa 5 FPS](#-kenapa-game-cuma-5-fps-akar-masalah--solusinya)).
-- **🧩 Mesa3D llvmpipe System-Wide (OpenGL 4.5)**: Mengganti driver OpenGL software bawaan Windows (**OpenGL 1.1**, penyebab game/emulator menolak jalan atau render super lambat) dengan **Mesa3D llvmpipe OpenGL 4.5** yang dipasang *system-wide* (`System32` + `SysWOW64`, driver asli dibackup `.srdp-bak`) **dan** per-game lewat tombol **`Optimalkan-Game-Ini.bat`**.
+- **🧩 Mesa3D llvmpipe System-Wide (OpenGL 4.5, WRP-safe)**: Mengganti driver OpenGL software bawaan Windows (**OpenGL 1.1**, penyebab game/emulator menolak jalan atau render super lambat) dengan **Mesa3D llvmpipe OpenGL 4.5** yang dipasang *system-wide* (`System32` + `SysWOW64`, driver asli dibackup `.srdp-bak`) dengan `takeown`+`icacls` karena file itu milik TrustedInstaller, sukses diverifikasi lewat hash SHA256, **dan** per-game lewat tombol **`Optimalkan-Game-Ini.bat`**.
 - **🔧 Tuning Renderer untuk Runner Tanpa GPU**: `LP_NUM_THREADS` disetel ke `vCPU - 1` (llvmpipe default memakai **semua** core sehingga DWM + encoder RDP + logika game berebut CPU → inilah penyebab FPS drop drastis), `mesa_glthread=true`, `vblank_mode=0`, `MESA_GL_VERSION_OVERRIDE=4.5`, shader cache 512 MB, dan `HwSchMode` dimatikan bila tidak ada GPU.
 - **🧯 Steam & Discord Tidak Lagi Mencuri Core**: Steam `steamwebhelper.exe` dan Discord (Chromium/Electron) dipaksa **tanpa GPU acceleration** (`BrowserFlags = -cef-disable-gpu -cef-disable-gpu-compositing`, `--disable-gpu`, `enableHardwareAcceleration:false`, prioritas `BelowNormal`, shortcut **`Steam-Hemat-CPU`**) — di mesin tanpa GPU keduanya jatuh ke *software rasterizer* dan bisa memakan **1 core penuh**.
 - **🩺 Diagnostik & Optimizer Game Bawaan**: **`Cek-Performa-Render.bat`** menampilkan GPU/adapter, status Mesa3D, nilai `DWMFRAMEINTERVAL`, dan 10 proses paling berat; **`Optimalkan-Game-Ini.bat`** memasang Mesa3D khusus game pilihanmu, mematikan *Fullscreen Optimization* DWM, dan membuat launcher hemat CPU.
@@ -139,6 +139,7 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 | `Discord.lnk` | Menjalankan Discord yang sudah dipulihkan dari Vault (atau instal otomatis saat pertama diklik). |
 | `Folder-Permanen-Anti-Reset (X:).lnk` | Membuka folder Vault permanen tempat game & bot harus disimpan. |
 | `Optimalkan-Game-Ini.bat` | Pilih `.exe` game → Mesa3D llvmpipe dipasang khusus game itu, Fullscreen Optimization DWM dimatikan, lalu dibuat **dua** launcher: `Jalankan-<nama>-Hemat-CPU.bat` (llvmpipe) & `Jalankan-<nama>-D3D12.bat` (WARP D3D12). |
+| `Pasang-Mesa-System-Wide.bat` | Pasang ulang Mesa3D sebagai OpenGL system-wide (`takeown` + `icacls` + verifikasi SHA256) kalau percobaan otomatis gagal. |
 | `Cek-Performa-Render.bat` | Diagnostik: adapter GPU, status Mesa3D, `DWMFRAMEINTERVAL`, `LP_NUM_THREADS`, 10 proses terberat, pemakaian RAM, **dan cek virtualisasi [6]** (bisa/tidak emulator Android). |
 | `AFK-Disconnect-Tanpa-Freeze.bat` | Pindahkan sesi ke Console (`tscon`) supaya game tetap render saat RDP ditutup. |
 | `Pasang-Lords-Mobile.bat` | Buka Steam langsung ke dialog instal **Lords Mobile versi PC resmi** (AppID `1041320`) — tanpa emulator. |
@@ -228,6 +229,19 @@ Runner GitHub `windows-2022` = **4 vCPU + 16 GB RAM + TANPA GPU** (hanya *Micros
 6. Untuk game 2D / idle / *auto-battler* / Discord Quest farming, kombinasi di atas biasanya sudah **30–60 FPS stabil**.
 
 > **Ekspektasi realistis:** game 3D modern (AAA) **tidak akan** playable di runner gratis tanpa GPU, sekeras apa pun tuning-nya — hardware-nya memang tidak ada. Yang bisa dicapai: game 2D/indie/emulator ringan dan game AFK berjalan mulus, serta semua game setidaknya *bisa dijalankan* dengan Mesa3D.
+
+### Kalau log bilang `Could not deploy Mesa3D: Access to the path 'C:\Windows\System32\opengl32.dll' is denied`
+
+**Artinya:** Mesa3D **berhasil diekstrak** ke `C:\Tools\Mesa3D`, tapi penggantian driver OpenGL system-wide ditolak Windows. `System32\opengl32.dll` dimiliki **`NT SERVICE\TrustedInstaller`** (Windows Resource Protection) — Administrator biasa memang tidak boleh menimpanya. Ini **bukan** bug izin runner.
+
+**Status sekarang: sudah diperbaiki otomatis.** Skrip kini menjalankan urutan yang sama dengan `systemwidedeploy.cmd` milik mesa-dist-win:
+`backup *.srdp-bak` → `takeown /f ... /a` → `icacls ... /grant *S-1-5-32-544:(F)` → copy → **verifikasi hash SHA256** → ACL sistem dipulihkan. Jadi baris `[OK] opengl32.dll -> C:\Windows\System32` akan muncul, bukan lagi *denied*.
+
+**Kalau masih muncul** (biasanya karena `opengl32.dll` sedang dipakai proses lain):
+1. Klik 2x **`Pasang-Mesa-System-Wide.bat`** di Desktop (retry kapan saja, otomatis minta elevasi).
+2. Atau langsung pakai **`Optimalkan-Game-Ini.bat`** → Mesa3D dipasang **per-game** (`opengl32.dll` di folder game, tanpa menyentuh System32) → hasil untuk game itu **sama saja**.
+
+**Perlu tenang?** Kegagalan ini **tidak** memengaruhi game DirectX/D3D11 — **Lords Mobile, Steam, Discord, dan hampir semua game modern tidak memakai `opengl32.dll` sama sekali**. Yang terdampak hanya aplikasi OpenGL murni (emulator lama, PPSSPP/Dolphin *backend GL*, beberapa indie). Drive `Cek-Performa-Render.bat` → bagian **[2] OPENGL** kini memverifikasi **hash**, jadi statusnya jujur (bukan sekadar "file backup ada").
 
 ### Kenapa tidak pakai GPU virtual (Virtual Display Driver / parsec-vdd)?
 Keduanya driver *display* virtual, **bukan GPU** — render tetap di CPU, ditambah risiko *driver signing / test mode* yang bisa membuat runner gagal boot. Karena itu repo ini memilih jalur **Mesa3D + WARP + tuning CPU**, yang 100% aman dan gratis.
@@ -341,7 +355,7 @@ Daftar **seluruh** knob optimasi yang relevan untuk runner Windows tanpa GPU, ap
 ### 4. GPU / Renderer
 | Tweak | Status | Detail |
 | :--- | :--- | :--- |
-| Mesa3D llvmpipe OpenGL 4.5 | ✅ | System-wide (`System32`/`SysWOW64`) + per-game, driver asli dibackup `.srdp-bak`. |
+| Mesa3D llvmpipe OpenGL 4.5 | ✅ | System-wide (`System32`/`SysWOW64`) **via `takeown`+`icacls`** (file WRP tidak bisa ditimpa Administrator biasa) + per-game, driver asli dibackup `.srdp-bak`, sukses diverifikasi lewat hash SHA256. |
 | `LP_NUM_THREADS = vCPU − 1` | ✅ | Mencegah llvmpipe merebut semua core dari DWM/encoder. |
 | `mesa_glthread`, `vblank_mode=0` | ✅ | Perintah GL dikirim paralel, tidak menunggu vsync 60 Hz. |
 | `MESA_NO_ERROR=1` | ✅ | Melewati cek error GL per-call (mahal di software render). |

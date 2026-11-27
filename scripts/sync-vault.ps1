@@ -334,6 +334,35 @@ if (Test-Path `$discordSettings) {
         }
     } catch {}
 }
+# --- INPUT LATENCY: hapus jeda klik/ketik (idempoten, dijalankan tiap logon) ---------------------------
+# MenuShowDelay / MouseHoverTime default 400 ms adalah penyebab utama "klik terasa telat" di RDP.
+reg add "HKCU\Control Panel\Desktop" /v MenuShowDelay /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Desktop" /v MouseHoverTime /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Desktop" /v ActiveWndTrkTimeout /t REG_DWORD /d 0 /f >`$null 2>&1
+reg add "HKCU\Control Panel\Desktop" /v KeyboardDelay /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Desktop" /v KeyboardSpeed /t REG_SZ /d "31" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Mouse" /v MouseSpeed /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Mouse" /v MouseSensitivity /t REG_SZ /d "10" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Mouse" /v MouseTrails /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Mouse" /v ClickLock /t REG_SZ /d "0" /f >`$null 2>&1
+reg add "HKCU\Control Panel\Cursors" /v CursorShadow /t REG_SZ /d "0" /f >`$null 2>&1
+
+# Terapkan segera ke sesi berjalan tanpa perlu logout (SystemParametersInfo via user32)
+try {
+    `$sig = '[DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint b, IntPtr c, uint d);'
+    `$spi = Add-Type -MemberDefinition `$sig -Name SpiInput -Namespace Srdp -PassThru
+    `$flags = 0x0001 -bor 0x0002   # SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+    # SPI_SETMENUSHOWDELAY = 0x006B -> 0 ms (jeda menu 400 ms hilang)
+    `$spi::SystemParametersInfo(0x006B, 0, [IntPtr]::Zero, `$flags) | Out-Null
+    # SPI_SETKEYBOARDDELAY = 0x0017 -> 0 (tunda repeat paling pendek)
+    `$spi::SystemParametersInfo(0x0017, 0, [IntPtr]::Zero, `$flags) | Out-Null
+    # SPI_SETKEYBOARDSPEED = 0x000B -> 31 (repeat paling cepat)
+    `$spi::SystemParametersInfo(0x000B, 31, [IntPtr]::Zero, `$flags) | Out-Null
+} catch {}
+
 "@
     $LinkerScriptPath = "$StateDir\link-user-profile.ps1"
     Set-Content -Path $LinkerScriptPath -Value $ProfileLinkerPs1 -Encoding UTF8

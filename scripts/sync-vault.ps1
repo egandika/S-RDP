@@ -40,11 +40,40 @@ $StagingTag = "s-rdp-vault-staging"
 $StateDir   = "C:\ProgramData\S-RDP"
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 
-# Select persistent Vault root: prefer D:\AFK-Data if D: has >=15 GB free, otherwise C:\AFK-Data
+function Test-SrdpTrue {
+    param([string]$Value)
+    return ($Value -eq "true")
+}
+
+# A double quote would break the -p"<password>" argument passed to 7-Zip (and could be used to inject
+# extra 7-Zip switches), so reject it early with a clear message instead of silently producing a bad archive.
+if ($VaultPassword.Contains('"')) {
+    Write-Warning "VAULT/RDP password mengandung karakter kutip ganda; 7-Zip tidak bisa menerimanya. Ganti password."
+    $global:LASTEXITCODE = 0
+    exit 1
+}
+
+if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
+    Write-Warning "GITHUB_REPOSITORY tidak tersedia (skrip ini harus dijalankan dari GitHub Actions)."
+    $global:LASTEXITCODE = 0
+    exit 1
+}
+
+# Select persistent Vault root. IMPORTANT: on restore we must reuse the exact same drive the previous
+# session backed up from, otherwise data is restored to C: while the logon script points at D:.
 $DriveRoot = "C:\AFK-Data"
-$dDrive = Get-PSDrive -Name D -ErrorAction SilentlyContinue
-if ($dDrive -and (($dDrive.Free / 1GB) -ge 15 -or (Test-Path "D:\AFK-Data"))) {
-    $DriveRoot = "D:\AFK-Data"
+$stateFile = "$StateDir\vault-root.txt"
+$savedRoot = ""
+if (Test-Path $stateFile) {
+    $savedRoot = (Get-Content $stateFile -Raw).Trim()
+}
+if ($Mode -eq "restore" -and $savedRoot -and $savedRoot -match '^[A-Za-z]:\\') {
+    $DriveRoot = $savedRoot
+} else {
+    $dDrive = Get-PSDrive -Name D -ErrorAction SilentlyContinue
+    if ($dDrive -and (($dDrive.Free / 1GB) -ge 15 -or (Test-Path "D:\AFK-Data"))) {
+        $DriveRoot = "D:\AFK-Data"
+    }
 }
 New-Item -ItemType Directory -Path $DriveRoot -Force | Out-Null
 New-Item -ItemType Directory -Path "$DriveRoot\Games" -Force | Out-Null
@@ -54,8 +83,9 @@ New-Item -ItemType Directory -Path "$DriveRoot\ProfileBackup\Local" -Force | Out
 $PublicDesktop = "C:\Users\Public\Desktop"
 
 $SevenZip = "C:\Program Files\7-Zip\7z.exe"
-if (-not (Test-Path $SevenZip)) {
-    $SevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+if (-not (Test-Path -LiteralPath $SevenZip)) {
+    $sevenCmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($sevenCmd) { $SevenZip = $sevenCmd.Source }
 }
 
 # Pick opposite drive with maximum free space for temporary archive download/upload staging
@@ -112,10 +142,23 @@ if ($Mode -eq "restore") {
 
     if ($ActiveDownloadTag -ne "") {
         Write-Host "    Backup ditemukan di '$ActiveDownloadTag'! Mengunduh arsip AES-256 ke staging ($TempVaultDir)..." -ForegroundColor Green
-        & gh release download $ActiveDownloadTag --repo $env:GITHUB_REPOSITORY --pattern "vault.7z.*" --dir $TempVaultDir --clobber
-        $FirstPart = "$TempVaultDir\vault.7z.001"
 
-        if (Test-Path $FirstPart) {
+        # Retry once: a single transient GitHub/CDN hiccup should not cost you a whole 6-hour session.
+        $FirstPart = "$TempVaultDir\vault.7z.001"
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            & gh release download $ActiveDownloadTag --repo $env:GITHUB_REPOSITORY --pattern "vault.7z.*" --dir $TempVaultDir --clobber 2>&1 | Out-Host
+            if ((Test-Path $FirstPart) -and $LASTEXITCODE -eq 0) { break }
+            if ($attempt -lt 2) {
+                Write-Warning "    Unduhan gagal/terputus (attempt $attempt), mengulang sekali lagi..."
+                Start-Sleep -Seconds 5
+            }
+        }
+
+        if (-not (Test-Path $FirstPart)) {
+            Write-Warning "    Unduhan vault GAGAL total. Sesi berjalan dengan folder permanen kosong (backup lama tetap aman di GitHub)."
+        } elseif (-not (Test-Path $SevenZip)) {
+            Write-Warning "    7-Zip tidak ditemukan; vault tidak bisa diekstrak pada sesi ini."
+        } else {
             Write-Host "    Mendekripsi & mengekstrak data langsung ke $DriveRoot ..." -ForegroundColor Cyan
             & $SevenZip x $FirstPart "-p$VaultPassword" "-o$DriveRoot" -y -mmt=on | Out-Null
             if ($LASTEXITCODE -eq 0) {
@@ -150,7 +193,23 @@ if ($Mode -eq "restore") {
             Write-Host "==> [AUTO-APP] Steam sudah pulih utuh dari Vault ($SteamDir)!" -ForegroundColor Green
         }
         if (Test-Path $SteamExe) {
+            # Normal shortcut, plus a CPU-friendly one: on a GPU-less runner Steam's Chromium UI
+            # (steamwebhelper.exe) falls back to SwiftShader software rasterization and can pin an
+            # entire vCPU, which is exactly what kills the in-game frame rate.
             Create-Shortcut -TargetPath $SteamExe -ShortcutPath "$PublicDesktop\Steam.lnk"
+
+            $SteamAfkBat = @"
+@echo off
+title Steam (Mode Hemat CPU - S-RDP)
+cd /d "$SteamDir"
+start "" "$SteamExe" -cef-disable-gpu -cef-disable-gpu-compositing -noshaders -nocrashmonitor -nofriendsui -nochatui
+"@
+            Set-Content -Path "$StateDir\launch-steam-afk.bat" -Value $SteamAfkBat -Encoding ASCII
+            Create-Shortcut -TargetPath "$StateDir\launch-steam-afk.bat" -ShortcutPath "$PublicDesktop\Steam-Hemat-CPU.lnk" `
+                -WorkingDir $SteamDir -IconLocation "$SteamExe,0"
+
+            # NOTE: BrowserFlags/HKCU must be written inside the *gamer* hive (HKU\<SID>), never from this
+            # SYSTEM/runner context - the logon script and the AFK Guardian handle that.
         }
 
         # 2. Smart Discord Launcher (Automatically launches restored Discord or runs fast silent install on first click)
@@ -165,10 +224,12 @@ if ($Mode -eq "restore") {
             }
         }
 
+        # Discord is Electron: on a GPU-less runner its GPU process falls back to software rasterization.
+        # Launching it with GPU disabled keeps a full CPU core available for the game.
         $DiscordLauncherBat = @"
 @echo off
 if exist "%LOCALAPPDATA%\Discord\Update.exe" (
-    start "" "%LOCALAPPDATA%\Discord\Update.exe" --processStart Discord.exe
+    start "" "%LOCALAPPDATA%\Discord\Update.exe" --processStart Discord.exe --process-start-args "--disable-gpu --disable-gpu-compositing"
     exit /b
 )
 if exist "$DiscordSetupPersist" (
@@ -182,6 +243,20 @@ start https://discord.com/download
         Set-Content -Path $DiscordLauncherPath -Value $DiscordLauncherBat -Encoding ASCII
         $DiscordIcon = if (Test-Path "$DriveRoot\ProfileBackup\Local\Discord\app.ico") { "$DriveRoot\ProfileBackup\Local\Discord\app.ico" } else { "$env:SystemRoot\System32\shell32.dll,13" }
         Create-Shortcut -TargetPath $DiscordLauncherPath -ShortcutPath "$PublicDesktop\Discord.lnk" -IconLocation $DiscordIcon
+
+        # If a restored profile already contains Discord settings.json, turn hardware acceleration off now
+        # (the AFK Guardian keeps re-applying this while Discord is closed).
+        $restoredDiscordSettings = "$DriveRoot\ProfileBackup\Roaming\discord\settings.json"
+        if (Test-Path $restoredDiscordSettings) {
+            try {
+                $rawSettings = Get-Content -Path $restoredDiscordSettings -Raw -ErrorAction Stop
+                if ($rawSettings -match '"enableHardwareAcceleration"\s*:\s*true') {
+                    $rawSettings = $rawSettings -replace '"enableHardwareAcceleration"\s*:\s*true', '"enableHardwareAcceleration":false'
+                    Set-Content -Path $restoredDiscordSettings -Value $rawSettings -Encoding UTF8 -NoNewline
+                    Write-Host "    Discord hardware acceleration dimatikan (hemat CPU untuk game)." -ForegroundColor Green
+                }
+            } catch {}
+        }
     }
 
     # Grant full NTFS permissions on $DriveRoot to $RdpUser so junctions & games never hit Access Denied
@@ -234,10 +309,30 @@ if (Test-Path "`$DriveRoot\ProfileBackup\steam-hkcu.reg") {
     reg import "`$DriveRoot\ProfileBackup\steam-hkcu.reg" >`$null 2>&1
 }
 if (Test-Path "`$DriveRoot\Steam\steam.exe") {
-    `$sp = `$DriveRoot.Replace('\','/') + '/Steam'
-    `$se = `$DriveRoot.Replace('\','/') + '/Steam/steam.exe'
+    `$sp = (`$DriveRoot -replace '\\', '/') + '/Steam'
+    `$se = `$sp + '/steam.exe'
     reg add "HKCU\Software\Valve\Steam" /v SteamPath /t REG_SZ /d "`$sp" /f >`$null 2>&1
     reg add "HKCU\Software\Valve\Steam" /v SteamExe  /t REG_SZ /d "`$se" /f >`$null 2>&1
+}
+
+# Keep Steam's Chromium UI off the CPU (GPU-less host => SwiftShader software rasterization).
+`$browserFlags = '-cef-disable-gpu -cef-disable-gpu-compositing'
+`$curFlags = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -Name BrowserFlags -ErrorAction SilentlyContinue).BrowserFlags
+if (`$curFlags -ne `$browserFlags) {
+    New-Item -Path 'HKCU:\Software\Valve\Steam' -Force -ErrorAction SilentlyContinue | Out-Null
+    New-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -Name BrowserFlags -Value `$browserFlags -PropertyType String -Force -ErrorAction SilentlyContinue | Out-Null
+}
+
+# Keep Discord's GPU process off the CPU too (harmless if Discord is not installed yet).
+`$discordSettings = "`$env:APPDATA\discord\settings.json"
+if (Test-Path `$discordSettings) {
+    try {
+        `$dj = Get-Content -Path `$discordSettings -Raw -ErrorAction Stop
+        if (`$dj -match '"enableHardwareAcceleration"\s*:\s*true') {
+            (`$dj -replace '"enableHardwareAcceleration"\s*:\s*true', '"enableHardwareAcceleration":false') |
+                Set-Content -Path `$discordSettings -Encoding UTF8 -NoNewline
+        }
+    } catch {}
 }
 "@
     $LinkerScriptPath = "$StateDir\link-user-profile.ps1"
@@ -341,6 +436,13 @@ if ($Mode -eq "backup") {
     $OutArchiveDir = Get-BestTempDir -SubFolder "s-rdp-vault-up" -AvoidDriveLetter $VaultDriveLetter
     Remove-Item -Path "$OutArchiveDir\*" -Recurse -Force -ErrorAction SilentlyContinue
 
+    if (-not (Test-Path $SevenZip)) {
+        Write-Warning "    7-Zip tidak ditemukan ($SevenZip) - backup dilewati agar data lama tidak rusak."
+        Write-Warning "    Backup lama di release '$ReleaseTag' TIDAK disentuh."
+        $global:LASTEXITCODE = 0
+        exit 0
+    }
+
     Write-Host "    Mengenkripsi $DriveRoot dengan AES-256 ke staging ($OutArchiveDir)..." -ForegroundColor Cyan
     Push-Location $DriveRoot
     & $SevenZip a "$OutArchiveDir\vault.7z" "*" "-p$VaultPassword" -mhe=on -mx=1 -mmt=on -v1900m -ssw `
@@ -357,7 +459,7 @@ if ($Mode -eq "backup") {
         $TotalMb = [math]::Round((($Parts | Measure-Object -Property Length -Sum).Sum / 1MB), 1)
         $PartPaths = $Parts | ForEach-Object { $_.FullName }
         $Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        $Notes = "🔒 Encrypted S-RDP Persistent Vault (AES-256 + Filename Encryption). Size: $TotalMb MB ($($Parts.Count) volume(s)). Updated at $Timestamp UTC."
+        $Notes = "Encrypted S-RDP Persistent Vault (AES-256 + Filename Encryption). Size: $TotalMb MB ($($Parts.Count) volume(s)). Updated at $Timestamp UTC."
 
         Write-Host "    [ATOMIC UPLOAD 1/2] Mengunggah $($Parts.Count) part ($TotalMb MB) ke staging release '$StagingTag' terlebih dahulu (Anti-Data-Loss)..." -ForegroundColor Cyan
         & gh release view $StagingTag --repo $env:GITHUB_REPOSITORY >$null 2>&1

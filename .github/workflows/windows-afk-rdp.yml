@@ -328,8 +328,12 @@ jobs:
                 "camerastoredirect:s:"
               )
               $rdpPath = Join-Path $env:GITHUB_WORKSPACE "S-RDP-Optimal.rdp"
+              # Varian 1024x768 untuk kasus "masih terasa ngeleg": pixel 40% lebih sedikit = encoder lebih cepat.
+              $rdpPathLow = Join-Path $env:GITHUB_WORKSPACE "S-RDP-Optimal-1024x768.rdp"
+              ((($rdpContent -replace 'desktopwidth:i:1280', 'desktopwidth:i:1024') -replace 'desktopheight:i:720', 'desktopheight:i:768') -join "`r`n") |
+                Out-File -FilePath $rdpPathLow -Encoding ascii
               ($rdpContent -join "`r`n") | Out-File -FilePath $rdpPath -Encoding ascii
-              Write-Host " File klien optimal : S-RDP-Optimal.rdp (unduh di bagian Artifacts run ini)" -ForegroundColor Yellow
+              Write-Host " File klien optimal : S-RDP-Optimal.rdp + S-RDP-Optimal-1024x768.rdp (unduh di Artifacts)" -ForegroundColor Yellow
             }
           } catch {
             Write-Warning "Gagal membuat file .rdp: $_"
@@ -379,7 +383,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: S-RDP-Optimal-${{ github.run_id }}
-          path: S-RDP-Optimal.rdp
+          path: S-RDP-Optimal*.rdp
           if-no-files-found: warn
           retention-days: 3
 

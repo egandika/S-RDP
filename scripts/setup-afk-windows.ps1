@@ -605,6 +605,22 @@ Set-ItemProperty -Path $PersonalizePolicy -Name "NoLockScreen" -Value 1 -Type DW
 
 Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Type DWord -Force
 Set-ItemProperty -Path $RdpWinStation -Name "UserAuthentication" -Value 0 -Type DWord -Force
+
+# --- Latency RDP: kurangi kerja encoder & overhead per frame (sumber "hover/klik terasa ngeleg") ---
+# InteractiveDelay = 0 : hilangkan delay interaktif internal RDP-Tcp.
+# ColorDepth = 3       : paksa 16-bit walau klien meminta 32-bit -> encoder software jauh lebih ringan.
+# MinEncryptionLevel=1 : enkripsi level "Low" (di dalam terowongan WireGuard Tailscale, aman) -> overhead kripto lebih kecil.
+Set-ItemProperty -Path $RdpWinStation -Name "InteractiveDelay" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $RdpWinStation -Name "ColorDepth" -Value 3 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $RdpWinStation -Name "MinEncryptionLevel" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+
+# Kanal redirection yang tidak dibutuhkan game: matikan supaya tidak ada polling kanal tiap detik.
+# (Drive redirect / clipboard SENGAJA dibiarkan agar kamu masih bisa memindahkan file & copy-paste.)
+$TsRdpPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+if (-not (Test-Path $TsRdpPolicy)) { New-Item -Path $TsRdpPolicy -Force | Out-Null }
+foreach ($chan in @("fDisableAudioCapture", "fDisableCcm", "fDisableLPT")) {
+    Set-ItemProperty -Path $TsRdpPolicy -Name $chan -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+}
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 Set-Service -Name "TermService" -StartupType Automatic -ErrorAction SilentlyContinue
 Restart-Service -Name "TermService" -Force -ErrorAction SilentlyContinue
@@ -1142,6 +1158,10 @@ if ($dwm) { Write-Host ("    DWMFRAMEINTERVAL = {0} ms (~{1} FPS)" -f $dwm, [Mat
 Write-Host ("    AVC444ModePreferred      = {0}" -f $ts.AVC444ModePreferred)
 Write-Host ("    AVCHardwareEncodePreferred = {0}" -f $ts.AVCHardwareEncodePreferred)
 Write-Host ("    VGOptimization_CaptureFrameRate = {0}" -f $ts.VGOptimization_CaptureFrameRate)
+$rdpTcp = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -ErrorAction SilentlyContinue
+Write-Host ("    InteractiveDelay         = {0}  (0 = delay interaktif RDP dimatikan)" -f $rdpTcp.InteractiveDelay)
+Write-Host ("    ColorDepth               = {0}  (3 = 16-bit dipaksa, encoder lebih ringan)" -f $rdpTcp.ColorDepth)
+Write-Host ("    MinEncryptionLevel       = {0}  (1 = low, aman di dalam WireGuard)" -f $rdpTcp.MinEncryptionLevel)
 
 Write-Host ""
 Write-Host "[4] 10 PROSES PALING BANYAK MAKAN CPU" -ForegroundColor Yellow

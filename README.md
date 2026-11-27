@@ -112,6 +112,8 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 | `autoreconnection enabled` | `1` | Tailscale putus 2 detik (pindah Wi-Fi) → sesi **tidak** mati, game **tidak** freeze. |
 | `bitmapcachepersistenable` | `1` | Cache bitmap antar-sesi → UI Windows tidak di-render ulang tiap konek. |
 
+> Tiap run sekarang menghasilkan **dua** file: `S-RDP-Optimal.rdp` (1280x720) dan `S-RDP-Optimal-1024x768.rdp` (paling responsif — pakai ini kalau hover/klik masih terasa ngeleg).
+
 > Butuh versi 1080p? Ubah `desktopwidth/desktopheight` jadi `1920`/`1080` **dan** `rdp_fps = 24`, karena encoder software harus mengompres 2,25× pixel lebih banyak. Template tanpa IP ada di [`client/S-RDP-Optimal.rdp`](client/S-RDP-Optimal.rdp).
 ---
 
@@ -188,6 +190,40 @@ Nilai tersebut langsung diterapkan ke sesi berjalan lewat `SystemParametersInfo`
 
 ### Kalau jedanya di dalam game (bukan menu Windows)
 Jeda itu = **waktu render 1 frame**. Di runner tanpa GPU artinya 50–150 ms saat game berat. Yang menurunkan: **resolusi lebih kecil**, efek grafis mati, dan `rdp_fps` lebih tinggi (**`60`** membuat desktop/klik terasa lebih responsif, tapi memakan CPU — trade-off dengan FPS game).
+
+### Hover tombol / highlight di game masih telat? Ini cara tahu penyebabnya
+
+Sensasi "geser mouse ke tombol, tombolnya baru menggelap belakangan" **bukan** soal `MenuShowDelay` (itu untuk menu Windows). Di dalam game, highlight digambar game itu sendiri, jadi yang kamu rasakan adalah **total waktu 1 frame bolak-balik**:
+
+| Tahap | Waktu tipikal | Cara mengecilkan |
+| :--- | :--- | :--- |
+| 1. Mouse event dari HP/PC → server (Tailscale) | **20–60 ms** kalau DIRECT · **100–300 ms** kalau RELAY | Pastikan *DIRECT* (lihat baris **Latensi Tailscale** di Summary) |
+| 2. Game memproses input + menggambar frame berikutnya | **0–1/FPS game** (game 20 FPS = s/d 50 ms) | Resolusi & grafis turun → FPS naik |
+| 3. DWM mengomposisi + *frame pacing* RDP | **0–33 ms** (`DWMFRAMEINTERVAL` 33 ms @ `rdp_fps=30`) | `rdp_fps = 60` → 0–16 ms |
+| 4. Encoder RDP software | **10–30 ms** @720p 16-bit | Resolusi turun (pixel 40% lebih sedikit = lebih cepat) |
+| 5. Kirim balik + decode di klien | **20–60 ms** | Sama dengan #1 |
+
+**Total realistis: 100–200 ms.** Itu sebabnya terasa "ada jeda". Setiap perbaikan di bawah memotong 15–50 ms dari total ini.
+
+#### Tes 3 langkah (30 detik) untuk tahu siapa yang bersalah
+1. **Hover tombol Windows** (Start / taskbar / menu klik-kanan) → kalau **instan**, jalur RDP + jaringan kamu sehat.
+2. **Hover tombol di dalam game** → kalau telat sementara Windows instan, berarti **game-nya yang render lambat** (FPS in-game rendah), bukan RDP.
+3. **Ketik di Notepad** → huruf muncul cepat = input & jaringan OK; masalahnya murni arah **render → encode → kirim**.
+
+> Game mobile-port sering memasang animasi *fade* pada highlight tombol (0,1–0,2 detik *tween*). Kalau di HP kamu sendiri juga terasa telat, itu desain gamenya, bukan lag server.
+
+#### Perbaikan, urut dari efek terbesar
+1. **Pakai `S-RDP-Optimal-1024x768.rdp`** (artefak baru, dibuat otomatis tiap run). Pada rasterizer software, 1024x768 = **40% pixel lebih sedikit** dari 720p → game & encoder sama-sama lebih cepat. Ini yang paling terasa untuk hover.
+2. **`rdp_fps = 60`** saat dispatch. Jujur: DWM+encoder bisa memakan s/d 2 core, jadi FPS game bisa turun — itu sebabnya default `30`. Untuk game 2D/UI-heavy (Lords Mobile), `60` + resolusi lebih kecil adalah kombinasi terbaik.
+3. **Jalankan game lewat launcher buatan `Optimalkan-Game-Ini.bat`** (`Jalankan-<nama>-Hemat-CPU.bat` / `-D3D12.bat`). Launcher itu mematikan **DWM Fullscreen Optimization** untuk game tersebut → frame tidak dikomposisi dua kali, dan itu langsung terasa sebagai klik/hover yang lebih cepat. Kalau kamu double-click `game.exe` langsung, optimasi ini **tidak** ikut aktif.
+4. **Grafis in-game paling rendah + FPS limit 30 di game.** Game yang render 20 FPS tidak akan pernah memberi highlight instan.
+5. **Pastikan rute Tailscale DIRECT**, bukan RELAY: RELAY = +80–250 ms yang tidak bisa ditutupi setting server apa pun.
+6. **Klien:** Wi-Fi 5 GHz/kabel, matikan *battery saver*, jangan pakai klien RDP berbasis browser (tambah 1–3 frame komposisi).
+
+#### Yang sudah dipasang di server untuk ini
+`InteractiveDelay=0`, `ColorDepth=3` (16-bit dipaksa), `MinEncryptionLevel=1` (overhead kripto lebih kecil di dalam terowongan WireGuard), kanal `fDisableAudioCapture`/`fDisableCcm`/`fDisableLPT` dimatikan, plus `MenuShowDelay`/`MouseHoverTime=0`, `MouseSpeed=0`, dan `KeyboardDelay=0`.
+
+> **Knob yang sengaja TIDAK dipakai:** `fEnableWddmDriver=0` (dipakai TurboRemoteFX) bisa memotong sedikit overhead frame, tapi berisiko merusak komposisi DWM di sesi ini. `MouseDataQueueSize` juga tetap tidak dipakai — hanya dibaca saat driver dimuat (butuh reboot).
 
 **`rdp_fps` 15 / 24 / 30 / 60 — pilih yang mana?**
 
@@ -379,6 +415,9 @@ Daftar **seluruh** knob optimasi yang relevan untuk runner Windows tanpa GPU, ap
 | `NetworkThrottlingIndex = 0xffffffff` | ✅ | MMCSS berhenti membatasi paket jaringan ke 10 paket/ms saat multimedia aktif. |
 | RSS / autotuning | ✅ | Antrean jaringan multi-core. |
 | Kompresi RDP | ✅ | `MaxCompressionLevel=0` = kompresor V1 (paling ringan di CPU). Naikkan ke `2` **hanya** kalau bandwidth Tailscale-mu terbatas. |
+| `InteractiveDelay=0` + `ColorDepth=3` (16-bit dipaksa) + `MinEncryptionLevel=1` | ✅ | Delay interaktif internal RDP dihapus, encoder software 30–40% lebih ringan, overhead kripto lebih kecil (aman karena sudah di dalam WireGuard). |
+| Kanal `fDisableAudioCapture`/`fDisableCcm`/`fDisableLPT` | ✅ | Kanal yang tidak dipakai game dimatikan; **drive redirect & clipboard dibiarkan** agar transfer file tetap bisa. |
+| `fEnableWddmDriver=0` (TurboRemoteFX) | ⛔ sengaja tidak | Bisa memotong overhead frame, tapi berisiko merusak komposisi DWM. |
 | TermDD `FlowControlDisable` | ✅ | `FlowControlDisable=1` + `FlowControlDisplayBandwidth`/`ChannelBandwidth` dilepas. |
 | QoS / DSCP marking | ⛔ sengaja tidak | Tailscale (WireGuard UDP) sudah punya jalur sendiri; marking tidak dihormati antar-AS. |
 | MTU tuning manual | ⛔ sengaja tidak | Tailscale mengatur MTU 1280 otomatis & aman untuk semua link. |

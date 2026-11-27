@@ -282,6 +282,58 @@ jobs:
           Write-Host " Hardware Runner     : $cpuName ($cpuCores Cores / $cpuThreads vCPU Threads) | $osRamGb GB RAM"
           Write-Host " Folder Anti-Reset   : $vaultRoot (Atomic AES-256 Auto-Backup)" -ForegroundColor Green
           Write-Host " Sisa Disk Space     : C: $freeC GB | D: $freeD GB (+ 20 GB Virtual Pagefile)"
+
+          # --- File klien .rdp optimal (16-bit, LAN, tanpa animasi/wallpaper, 1280x720) --------------
+          # Diunggah sebagai artefak run supaya kamu tinggal download & double-click, tanpa setting manual.
+          try {
+            if ($tsIp -match '^\d+\.\d+\.\d+\.\d+$') {
+              $rdpContent = @(
+                "full address:s:$tsIp",
+                "username:s:$($env:RDP_USER)",
+                "prompt for credentials:i:1",
+                "promptcredentialonce:i:1",
+                "enablecredsspsupport:i:0",
+                "authentication level:i:2",
+                "desktopwidth:i:1280",
+                "desktopheight:i:720",
+                "smart sizing:i:0",
+                "dynamic resolution:i:1",
+                "session bpp:i:16",
+                "compression:i:1",
+                "keyboardhook:i:2",
+                "videoplaybackmode:i:1",
+                "connection type:i:6",
+                "networkautodetect:i:0",
+                "bandwidthautodetect:i:0",
+                "displayconnectionbar:i:1",
+                "disable wallpaper:i:1",
+                "disable full window drag:i:1",
+                "disable menu anims:i:1",
+                "disable themes:i:1",
+                "disable cursor setting:i:1",
+                "allow font smoothing:i:0",
+                "allow desktop composition:i:0",
+                "autoreconnection enabled:i:1",
+                "bitmapcachepersistenable:i:1",
+                "audiomode:i:0",
+                "audiocapturemode:i:0",
+                "redirectprinters:i:0",
+                "redirectcomports:i:0",
+                "redirectsmartcards:i:0",
+                "redirectposdevices:i:0",
+                "redirectclipboard:i:1",
+                "devicestoredirect:s:",
+                "drivestoredirect:s:",
+                "usbdevicestoredirect:s:",
+                "camerastoredirect:s:"
+              )
+              $rdpPath = Join-Path $env:GITHUB_WORKSPACE "S-RDP-Optimal.rdp"
+              ($rdpContent -join "`r`n") | Out-File -FilePath $rdpPath -Encoding ascii
+              Write-Host " File klien optimal : S-RDP-Optimal.rdp (unduh di bagian Artifacts run ini)" -ForegroundColor Yellow
+            }
+          } catch {
+            Write-Warning "Gagal membuat file .rdp: $_"
+          }
           Write-Host " Durasi Sesi         : $($env:DURATION) menit"
           Write-Host "----------------------------------------------------------------"
           Write-Host " PENTING UNTUK AFK GAME & ANTI-RESET:" -ForegroundColor Magenta
@@ -307,6 +359,7 @@ jobs:
             "| **Jalur Render** | ``$renderPath`` — Mesa3D OpenGL: **$mesaActive** (`LP_NUM_THREADS=$rasterThreads`) |",
             "| **Latensi Tailscale** | ``$pingLine`` — $(if ($relayWarn) { '**RELAY DERP (input berjeda!)**' } else { 'Direct/low-latency' }) |",
             "| **Input Latency Tuning** | ``MenuShowDelay=0 ms`` · ``MouseHoverTime=0`` · pointer accel OFF · key-repeat instan |",
+            "| **File Klien** | Unduh artefak ``S-RDP-Optimal-<run id>`` → double-click. Sudah 16-bit, LAN, 1280x720, animasi/wallpaper OFF |",
             "| **Frame Pacing RDP** | ``$fpsLabel`` *(turunkan ke 24/15 bila CPU masih penuh)* |",
             "| **Resolusi Console AFK** | ``1280x720 @ 100% DPI`` *(Samakan resolusi aplikasi RDP ke 1280x720 untuk Auto-Clicker)* |",
             "| **Fitur Keamanan Data** | Anti-Reset Vault, Steam/Discord, DirectX+VC++, Mesa3D, dan pembersihan SDK **selalu aktif** |",
@@ -321,6 +374,14 @@ jobs:
             "- **Game 5 FPS?** Klik 2x **``Optimalkan-Game-Ini.bat``** lalu pilih file ``.exe`` game (memasang Mesa3D llvmpipe + mematikan komposisi ganda DWM + membuat launcher hemat CPU), dan pakai **``Cek-Performa-Render.bat``** untuk melihat renderer & proses yang paling berat."
           )
           ($summaryLines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Unggah File Klien RDP Optimal (Artefak)
+        uses: actions/upload-artifact@v4
+        with:
+          name: S-RDP-Optimal-${{ github.run_id }}
+          path: S-RDP-Optimal.rdp
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Menjaga Sesi AFK Tetap Hidup (Zero-Overhead Loop + In-RDP Warnings)
         shell: pwsh

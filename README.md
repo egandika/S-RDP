@@ -28,6 +28,8 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 - **🎞️ Fullscreen Exclusive + Wallpaper Mati**: `GameDVR_FSEBehaviorMode=2` memaksa game yang mendukung FSE untuk **keluar dari komposisi DWM** (frame 3D tidak di-*copy* dua kali), wallpaper/`TileWallpaper` dikosongkan, dan `ForegroundLockTimeout=0` menghilangkan jeda saat aplikasi mengambil fokus.
 - **🗂️ Shader Cache Mesa Permanen di Vault**: Stutter terbesar llvmpipe adalah **kompilasi shader** saat game pertama kali dibuka. `MESA_SHADER_CACHE_DIR` diarahkan ke **`D:\AFK-Data\ShaderCache`** (ikut ter-backup), jadi di sesi ke-2 dan seterusnya game langsung mulus sejak frame pertama.
 - **🎮 Launcher Ganda: llvmpipe vs GLonD3D12**: `Optimalkan-Game-Ini.bat` sekarang membuat **dua** launcher — `Jalankan-<nama>-Hemat-CPU.bat` (llvmpipe) dan `Jalankan-<nama>-D3D12.bat` (`GALLIUM_DRIVER=d3d12`, OpenGL lewat **WARP Direct3D 12**). Untuk game *fill-rate* berat, jalur D3D12 sering **1,5–2× lebih cepat** dari llvmpipe.
+- **📱 Lords Mobile & Game PC Mobile — Tanpa Emulator**: Runner GitHub tidak punya *nested virtualization*, jadi BlueStacks/LDPlayer/MuMu mustahil boot. Karena itu disediakan jalur resmi: **`Pasang-Lords-Mobile.bat`** (Steam AppID `1041320`) + **`Lords-Mobile.bat`** yang langsung `1280x720` windowed dengan env paling hemat CPU. Lihat [panduan Lords Mobile](#-lords-mobile-dan-game-mobile-lain--tanpa-emulator).
+- **🗃️ Persistensi Kunci Registry Game**: Kunci `HKCU\Software\IGG`, `Software\Unity`, `Software\Tencent` (+ daftar sendiri di `extra-hkcu-keys.txt`) diekspor ke `hkcu-*.reg` saat backup dan diimpor saat logon, dan `AppData\LocalLow` di-junction ke Vault → setting grafis & token login game Unity/mobile tidak hilang tiap 6 jam.
 - **🌐 File Klien `.rdp` Siap Pakai (Artefak)**: Tiap run mengunggah **`S-RDP-Optimal.rdp`** berisi IP Tailscale run tersebut + setting klien paling rendah latensi (`16-bit`, `LAN`, animasi/wallpaper OFF, `1280x720`, clipboard ON, redirection OFF). Cukup unduh di tab **Artifacts** → double-click.
 - **🧹 Pembersihan Sisa: Service & Kompresi RDP**: `MaxCompressionLevel=0` (kompresor V1 = paling ringan di CPU), Controlled Folder Access off, MMCSS `Clock Rate=10000` + `Affinity=0`, serta pruning service mati (`TabletInputService`, `RemoteRegistry`, `RetailDemo`, `WMPNetworkSvc`, `Fax`, `diagnosticshub`, `edgeupdate*`) — Xbox service **sengaja dibiarkan** karena dipakai overlay & save cloud game.
 - **🖥️ Direktori Mesa3D Lengkap**: Paket `mesa3d-*-release-msvc.7z` diekstrak ke `C:\Tools\Mesa3D` (folder `x64` & `x86`), sehingga launcher per-game maupun `opengl32.dll` system-wide selalu memakai versi Mesa3D terbaru.
@@ -137,8 +139,10 @@ Workflow GitHub Actions siap pakai untuk membuat **Windows Server Remote Desktop
 | `Discord.lnk` | Menjalankan Discord yang sudah dipulihkan dari Vault (atau instal otomatis saat pertama diklik). |
 | `Folder-Permanen-Anti-Reset (X:).lnk` | Membuka folder Vault permanen tempat game & bot harus disimpan. |
 | `Optimalkan-Game-Ini.bat` | Pilih `.exe` game → Mesa3D llvmpipe dipasang khusus game itu, Fullscreen Optimization DWM dimatikan, lalu dibuat **dua** launcher: `Jalankan-<nama>-Hemat-CPU.bat` (llvmpipe) & `Jalankan-<nama>-D3D12.bat` (WARP D3D12). |
-| `Cek-Performa-Render.bat` | Diagnostik: adapter GPU, status Mesa3D, `DWMFRAMEINTERVAL`, `LP_NUM_THREADS`, 10 proses terberat, pemakaian RAM. |
+| `Cek-Performa-Render.bat` | Diagnostik: adapter GPU, status Mesa3D, `DWMFRAMEINTERVAL`, `LP_NUM_THREADS`, 10 proses terberat, pemakaian RAM, **dan cek virtualisasi [6]** (bisa/tidak emulator Android). |
 | `AFK-Disconnect-Tanpa-Freeze.bat` | Pindahkan sesi ke Console (`tscon`) supaya game tetap render saat RDP ditutup. |
+| `Pasang-Lords-Mobile.bat` | Buka Steam langsung ke dialog instal **Lords Mobile versi PC resmi** (AppID `1041320`) — tanpa emulator. |
+| `Lords-Mobile.bat` | Jalankan Lords Mobile: windowed `1280x720`, env llvmpipe/`LP_NUM_THREADS` sudah disetel. |
 | `AutoStart-Steam.bat` | Toggle: aktifkan agar **Steam langsung jalan sendiri** tiap sesi baru selesai restore (tanpa klik). |
 | `Simpan-Data-Sekarang.bat` | Live snapshot Vault tanpa menutup game. |
 | `Matikan-Server-RDP.bat` | Backup final + hentikan sesi lebih awal (hemat kuota menit Actions). |
@@ -233,6 +237,45 @@ Keduanya driver *display* virtual, **bukan GPU** — render tetap di CPU, ditamb
 - **Color depth:** `16-bit` (meringankan encoder software).
 - Jangan pakai mode *fullscreen borderless* pada aplikasi Remote Desktop.
 - Jika sudah selesai AFK sebelum timer habis, klik 2x **`Matikan-Server-RDP.bat`** di Desktop untuk menghemat kuota menit GitHub Actions.
+
+---
+
+## 📱 Lords Mobile (dan Game Mobile Lain) — Tanpa Emulator
+
+**Pertanyaan pertama yang harus dijawab: emulator Android tidak bisa dipakai di sini.** Runner GitHub-hosted adalah VM **tanpa *nested virtualization*** — `VMMonitorModeExtensions = False`, jadi BlueStacks / LDPlayer / MuMu / Google Play Games PC **gagal boot** (layar hitam atau *"virtualization not enabled"*). Ini bukan setting yang bisa kita ubah dari dalam sesi. Buktikan sendiri: jalankan **`Cek-Performa-Render.bat`** → bagian **[6] VIRTUALISASI**.
+
+Kabar baiknya: **Lords Mobile punya versi PC resmi**, jadi tidak butuh emulator sama sekali.
+
+| Cara | Bisa di repo ini? | Catatan |
+| :--- | :--- | :--- |
+| **Steam resmi** (AppID `1041320`) | ✅ **Disarankan** | Versi PC resmi IGG, gratis, login via Steam. Sudah ada tombolnya di Desktop. |
+| **Client PC resmi IGG** (`lordsmobile.igg.com/pc`) | ✅ Bisa | Login FB / Google / IGG / WeChat. Unduh langsung, tidak lewat Steam. |
+| Emulator Android (BlueStacks/LDPlayer/MuMu) | ❌ **Tidak bisa** | Tidak ada nested virtualization → emulator tidak boot. |
+| Larger runner berbayar | ⚠️ Bisa, tapi **bukan 0rp** | Larger runner punya nested virt, ditagih per menit. |
+
+### Langkah main Lords Mobile (sekali klik)
+1. Di Desktop RDP, klik 2x **`Pasang-Lords-Mobile.bat`** → Steam langsung membuka dialog instal Lords Mobile → **Install** → tunggu unduhan (beberapa GB, disk C dikosongkan +30 GB jadi aman).
+2. Setelah selesai, klik 2x **`Lords-Mobile.bat`**. Launcher ini sudah:
+   - `1280x720` **windowed** (resolusi paling seimbang untuk render CPU),
+   - `LP_NUM_THREADS = vCPU − 1`, `GALLIUM_DRIVER=llvmpipe`, `mesa_glthread`, `vblank_mode=0`.
+3. Login sekali, hubungkan akun (**Steam / Facebook / IGG / Google**), centang *remember me*.
+4. **Setting di dalam game** (menu ⚙️ → Graphics): **Low / Medium**, `Effect` **OFF**, `FPS limit 30`, `Resolution` sama dengan RDP (`1280x720`), matikan *battle effect* / *city animation* bila ada.
+
+### Ekspektasi FPS
+Lords Mobile itu **2D isometrik** — jauh lebih ringan daripada game 3D. Di 4 vCPU tanpa GPU, `1280x720` biasanya **25–45 FPS**; turun ke **1024x768** kalau *world map* atau battle besar terasa berat. Ini termasuk game yang memang **cocok** untuk runner gratis.
+
+### Supaya AFK-nya benar (ini inti permainannya)
+| Kebutuhan Lords Mobile | Cara di repo ini |
+| :--- | :--- |
+| Kota tetap produksi saat RDP ditutup | **`AFK-Disconnect-Tanpa-Freeze.bat`** (pindah sesi ke Console via `tscon`) — **jangan** klik tombol X. |
+| Shield 8 jam tidak habis sia-sia | Durasi sesi maksimal **330 menit (5,5 jam)** → pasang **shield 8 jam** sebelum AFK. |
+| March/gathering 25 menit berjalan terus | Game tetap render di Console; task `S-RDP-TimerResolution` (1 ms) menjaga timer internal game presisi. |
+| Macro / auto-tap tidak meleset | Console dikunci `1280x720 @ 100% DPI` + RDP dikunci resolusi sama → koordinat klik stabil. |
+| Tidak login ulang tiap sesi | Token login Steam + `AppData\LocalLow` + kunci `HKCU\Software\IGG` ikut tersimpan di Vault AES-256. |
+| Steam langsung siap saat masuk | Aktifkan **`AutoStart-Steam.bat`** (toggle) → Steam jalan sendiri tiap logon, Lords Mobile tinggal diklik. |
+| Farming badge/Quest Steam & Discord | Lords Mobile terpasang **di Steam**, jadi jam main tercatat normal (Steam *playtime*, achievement, dan deteksi *game activity* Discord). |
+
+> **Multi-akun?** Satu klien Steam = satu sesi login. Untuk akun kedua, pakai **client PC IGG** (bisa dibuka terpisah) — tapi realistis di 4 vCPU: **1 instance** adalah batas nyaman; 2 instance masih mungkin kalau setting grafis diturunkan ke paling rendah, dengan konsekuensi FPS turun ±40%.
 
 ---
 
@@ -335,6 +378,9 @@ Daftar **seluruh** knob optimasi yang relevan untuk runner Windows tanpa GPU, ap
 | Auto-Restart 24/7 | 🗑️ dihapus | Sesuai permintaan: tidak ada auto-restart. |
 | Vault AES-256 `-mhe=on` | ✅ | Atomic staging swap; tidak ada plaintext kredensial di repo Public. |
 | Auto-start Steam | ✅ opsional | Toggle `AutoStart-Steam.bat` → Steam jalan sendiri tiap logon. |
+| `AppData\LocalLow` di-junction ke Vault | ✅ | Unity / game mobile-port menyimpan setting & cache login di sini → tidak perlu login ulang tiap sesi. |
+| Kunci `HKCU` game (`Software\IGG`, `Software\Unity`, dst) | ✅ | Diekspor ke `hkcu-*.reg` saat backup & diimpor saat logon. Tambah kunci lain di `D:\AFK-Data\extra-hkcu-keys.txt`. |
+| Emulator Android (BlueStacks/LDPlayer/MuMu) | ⛔ **sengaja tidak** | Runner GitHub tanpa *nested virtualization* (`VMMonitorModeExtensions=False`) → emulator **gagal boot**. Lords Mobile dipakai lewat versi PC resmi. |
 | Auto-login Windows (plaintext `DefaultPassword`) | ⛔ sengaja tidak | Password tersimpan plaintext di registry/Disk → bocor ke vault. Login RDP manual lebih aman. |
 
 > **Ringkas:** 60+ knob dipakai, 12 knob populer **sengaja ditolak** dengan alasan teknis di atas. Itu bukan kelalaian — itu daftar yang sudah diuji terhadap karakteristik runner: **ephemeral, 4 vCPU, tanpa GPU, tanpa reboot**.

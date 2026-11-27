@@ -7,9 +7,13 @@
     - Expands Virtual Memory (20 GB Pagefile) & enables fast NTFS I/O caching
     - Injects Visual Effects, GameDVR-Off, & 100% DPI Scaling directly into Default User Registry Hive (NTUSER.DAT) so the RDP gamer account inherits them cleanly without corrupting C:\Users\<user>
     - Locks Hyper-V / Console Display Resolution & 96 DPI (100% scaling) so macro/auto-clicker coordinates don't drift on tscon AFK handover
-    - Unlocks RDP 60 FPS cap (DWMFRAMEINTERVAL = 15) + H.264/AVC444 & UDP low-latency transport + Windows Audio sink
+    - Adapts RDP graphics to the hardware: GPU-less hosts get CPU-friendly frame pacing (30 FPS) + no forced
+      AVC444, real GPUs keep 60 FPS + hardware H.264/AVC444 + Windows Audio sink
     - Smart runtime installer: skips VC++ download if modern 14.40+ runtime is already pre-installed on runner (saves ~25s startup!)
     - Registers Native AFK Guardian (keeps hogs dead, boosts active game priority, trims memory leaks >78%)
+    - GPU-aware rendering tuning: software-only hosts (WARP/llvmpipe) get CPU-friendly RDP encoder + DWM pacing,
+      while real-GPU hosts keep AVC444/H.264 hardware encode unlocked at 60 FPS
+    - Deploys Mesa3D system-wide (OpenGL 1.1 -> 4.5 llvmpipe) so GPU-less games/emulators actually render
 #>
 
 param(
@@ -23,10 +27,53 @@ param(
     [string]$InstallGameRuntimes = "true",
 
     [Parameter(Mandatory=$false)]
-    [string]$InstallMesa3D = "false"
+    [string]$InstallMesa3D = "true",
+
+    # Frame pacing cap for the desktop compositor (DWMFRAMEINTERVAL). On a GPU-less runner a hard 60 FPS
+    # composition target wastes a whole vCPU on pure copy work, so 30 is the sane default for software rendering.
+    [Parameter(Mandatory=$false)]
+    [ValidateRange(10, 144)]
+    [int]$RdpFps = 30,
+
+    [Parameter(Mandatory=$false)]
+    [string]$TuneRendering = "true",
+
+    # Mesa3D system-wide deployment (replaces the inbox OpenGL 1.1 software driver for every process).
+    [Parameter(Mandatory=$false)]
+    [string]$MesaSystemWide = "true"
 )
 
 $ErrorActionPreference = "Continue"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+function Test-SrdpTrue {
+    param([string]$Value)
+    # PowerShell -eq is case-insensitive, so "true"/"TRUE"/"True" all pass.
+    return ($Value -eq "true")
+}
+
+function Get-SrdpGpuInfo {
+    <#
+        Returns $null when the machine only has the software/basic display adapter (typical GitHub runner),
+        otherwise a list of real GPUs. Used to decide between hardware AVC444/60FPS and CPU-friendly pacing.
+    #>
+    $adapters = @(Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue)
+    # NOTE: AdapterRAM must NOT be used here (it is 0 or wraps on many modern GPUs); the adapter *name*
+    # is the reliable signal. GPU-less runners only expose the Basic Render/Display driver.
+    $real = @($adapters | Where-Object {
+        $_.Name -and
+        $_.Name -notmatch 'Microsoft Basic (Render|Display)' -and
+        $_.Name -notmatch 'Remote Display Adapter' -and
+        $_.Name -notmatch 'Microsoft Hyper-V Video' -and
+        $_.Name -notmatch 'Standard VGA'
+    })
+    if ($real.Count -gt 0) { return $real }
+    return $null
+}
+
+$Script:SrdpGpu = Get-SrdpGpuInfo
 
 Write-Host "==> [1/10] Killing 70% Background CPU Hogs (Defender, .NET NGEN, Telemetry, Update Workers)..." -ForegroundColor Cyan
 try {
@@ -150,7 +197,10 @@ Set-ItemProperty -Path $MemMgmt -Name "DisablePagingExecutive" -Value 1 -Type DW
 
 Write-Host "==> [4/10] Tuning CPU Scheduler, DirectX WARP, Network Ping & Default User Hive..." -ForegroundColor Cyan
 Get-ScheduledTask -TaskName "ServerManager" -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
-New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -PropertyType DWORD -Force | Out-Null
+if (-not (Test-Path "HKLM:\SOFTWARE\Microsoft\ServerManager")) {
+    New-Item -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Force -ErrorAction SilentlyContinue | Out-Null
+}
+New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -PropertyType DWORD -Force -ErrorAction SilentlyContinue | Out-Null
 
 # Favor Foreground Applications (Win32PrioritySeparation = 38 / 0x26)
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 38 -Type DWord -Force
@@ -170,10 +220,48 @@ Set-ItemProperty -Path $GamesTaskPath -Name "SFIO Priority" -Value "High" -Type 
 Set-ItemProperty -Path $GamesTaskPath -Name "Background Only" -Value "False" -Type String -Force
 
 # DirectX / DXGI Software & WARP Rendering Latency Tweaks
+# NOTE: TdrLevel=0 ("never recover") used to hang the whole desktop forever if a WARP/llvmpipe draw call
+# got stuck, so we keep the Windows default recovery level and only relax the timeout window.
 $DxGraphicsDrivers = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
-Set-ItemProperty -Path $DxGraphicsDrivers -Name "TdrLevel" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $DxGraphicsDrivers -Name "TdrLevel" -Value 3 -Type DWord -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $DxGraphicsDrivers -Name "TdrDelay" -Value 60 -Type DWord -Force -ErrorAction SilentlyContinue
-Set-ItemProperty -Path $DxGraphicsDrivers -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $DxGraphicsDrivers -Name "TdrDdiDelay" -Value 60 -Type DWord -Force -ErrorAction SilentlyContinue
+if ($Script:SrdpGpu) {
+    # Real GPU present -> hardware GPU scheduling helps.
+    Set-ItemProperty -Path $DxGraphicsDrivers -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+} else {
+    # Software/WARP only -> GPU scheduling just adds WDDM bookkeeping overhead on a 4 vCPU box.
+    Set-ItemProperty -Path $DxGraphicsDrivers -Name "HwSchMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
+# Mesa3D / llvmpipe machine-wide renderer environment (only affects Mesa-driven OpenGL, ignored otherwise)
+#   LP_NUM_THREADS      : llvmpipe rasterizer threads (default = ALL cores, which starves DWM + the RDP
+#                         encoder + the game's own logic thread on a 4 vCPU runner) -> reserve 1 core.
+#   mesa_glthread       : offloads OpenGL command submission to a dedicated thread.
+#   vblank_mode=0       : disables swap-interval vsync waits (software rendering can never hit 60 Hz anyway).
+# ---------------------------------------------------------------------------
+if (Test-SrdpTrue $TuneRendering) {
+    $logicalCpu = [Environment]::ProcessorCount
+    $rasterThreads = [Math]::Max(2, $logicalCpu - 1)
+    if ($Script:SrdpGpu) { $rasterThreads = [Math]::Max(2, $logicalCpu) }
+
+    $RendererEnv = [ordered]@{
+        "LP_NUM_THREADS"           = "$rasterThreads"
+        "GALLIUM_DRIVER"           = "llvmpipe"
+        "LIBGL_ALWAYS_SOFTWARE"    = "1"
+        "mesa_glthread"            = "true"
+        "vblank_mode"              = "0"
+        "MESA_GL_VERSION_OVERRIDE" = "4.5"
+        "MESA_GLSL_VERSION_OVERRIDE" = "450"
+        "MESA_SHADER_CACHE_MAX_SIZE" = "512M"
+        "MESA_SHADER_CACHE_DISABLE"  = "false"
+    }
+    foreach ($key in $RendererEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $RendererEnv[$key], "Machine")
+    }
+    Write-Host "    Renderer env: LP_NUM_THREADS=$rasterThreads, GALLIUM_DRIVER=llvmpipe, mesa_glthread=true, vblank_mode=0" -ForegroundColor Green
+}
 
 # Disable Nagle's Algorithm (TCP NoDelay & TcpAckFrequency = 1) + RSS
 netsh int tcp set global rss=enabled autotuninglevel=normal ecncapability=disabled timestamps=disabled 2>$null | Out-Null
@@ -221,19 +309,55 @@ bcdedit /set disabledynamictick yes 2>$null | Out-Null
 bcdedit /deletevalue numproc 2>$null | Out-Null
 bcdedit /deletevalue truncatememory 2>$null | Out-Null
 
-Write-Host "==> [5/10] Unlocking RDP 60 FPS, H.264/AVC444 & Enabling Audio Sink..." -ForegroundColor Cyan
-$DwmWinStation = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations"
-Set-ItemProperty -Path $DwmWinStation -Name "DWMFRAMEINTERVAL" -Value 15 -Type DWord -Force -ErrorAction SilentlyContinue
+Write-Host "==> [5/10] Tuning RDP Frame Pacing ($RdpFps FPS), Encoder Path & Enabling Audio Sink..." -ForegroundColor Cyan
 
+# --- Desktop composition pacing -------------------------------------------------
+# DWMFRAMEINTERVAL is a millisecond frame interval. 15 ~= 60 FPS, 33 ~= 30 FPS.
+# On a GPU-less host (WARP/llvmpipe) every composed frame is a full CPU copy + encode, so a hard 60 FPS
+# target silently eats an entire vCPU and DROPS the real in-game FPS. We therefore pace to $RdpFps
+# (30 by default) unless a real GPU exists.
+$targetFps = $RdpFps
+if ($Script:SrdpGpu -and $targetFps -lt 60) { $targetFps = 60 }
+$frameIntervalMs = [int][Math]::Round(1000 / $targetFps)
+if ($frameIntervalMs -lt 5) { $frameIntervalMs = 5 }
+
+$DwmWinStation = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations"
+Set-ItemProperty -Path $DwmWinStation -Name "DWMFRAMEINTERVAL" -Value $frameIntervalMs -Type DWord -Force -ErrorAction SilentlyContinue
+Write-Host "    DWMFRAMEINTERVAL=$frameIntervalMs ms (~$targetFps FPS composition target)" -ForegroundColor Green
+
+# --- Terminal Services graphics policies ---------------------------------------
 $TsPolicies = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
 if (-not (Test-Path $TsPolicies)) { New-Item -Path $TsPolicies -Force | Out-Null }
-Set-ItemProperty -Path $TsPolicies -Name "AVC444ModePreferred" -Value 1 -Type DWord -Force
-Set-ItemProperty -Path $TsPolicies -Name "AVCHardwareEncodePreferred" -Value 1 -Type DWord -Force
-Set-ItemProperty -Path $TsPolicies -Name "fEnableVirtualizedGraphics" -Value 1 -Type DWord -Force
-Set-ItemProperty -Path $TsPolicies -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
-Set-ItemProperty -Path $TsPolicies -Name "MaxIdleTime" -Value 0 -Type DWord -Force
-Set-ItemProperty -Path $TsPolicies -Name "MaxConnectionTime" -Value 0 -Type DWord -Force
-Set-ItemProperty -Path $TsPolicies -Name "fResetBroken" -Value 0 -Type DWord -Force
+if ($Script:SrdpGpu) {
+    # Hardware H.264/AVC444 (needs a real hardware encoder, otherwise Windows silently falls back to RFX).
+    Set-ItemProperty -Path $TsPolicies -Name "AVC444ModePreferred" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $TsPolicies -Name "AVCHardwareEncodePreferred" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+} else {
+    # Software-only host: forcing AVC444 makes the session probe/attempt a software H.264 4:4:4 encode.
+    # The cheaper RemoteFX Progressive path keeps the desktop responsive and hands the freed core to the game.
+    Set-ItemProperty -Path $TsPolicies -Name "AVC444ModePreferred" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $TsPolicies -Name "AVCHardwareEncodePreferred" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+}
+Set-ItemProperty -Path $TsPolicies -Name "fEnableVirtualizedGraphics" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "SelectTransport" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "bEnumerateHWBeforeSW" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "GraphicsProfile" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "VGOptimization_CaptureFrameRate" -Value ([Math]::Min($targetFps, 60)) -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "MaxCompressionLevel" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "MaxIdleTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "MaxConnectionTime" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "fResetBroken" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TsPolicies -Name "fDisableCam" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+
+# --- TermDD flow control -------------------------------------------------------
+# Default flow control throttles the display channel to a conservative bitrate, which is what makes RDP
+# feel like a slideshow over Tailscale even when the uplink is fine. Networking is cheap here, CPU is not.
+$TermDD = "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD"
+Set-ItemProperty -Path $TermDD -Name "FlowControlDisable" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TermDD -Name "FlowControlDisplayBandwidth" -Value 16 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TermDD -Name "FlowControlChannelBandwidth" -Value 144 -Type DWord -Force -ErrorAction SilentlyContinue
+Set-ItemProperty -Path $TermDD -Name "FlowControlChargePostCompression" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 
 foreach ($audioSvc in @("AudioEndpointBuilder", "Audiosrv")) {
     if (Get-Service -Name $audioSvc -ErrorAction SilentlyContinue) {
@@ -256,61 +380,109 @@ New-Item -ItemType Directory -Path $SysScriptsDir -Force | Out-Null
 $OptimizerLoopPs1 = @'
 $ErrorActionPreference = "SilentlyContinue"
 
+$SrdpUser = "__RDP_USER__"
+
 # 1. Keep CPU hogs dead
 foreach ($hog in @("mscorsvw", "ngen", "ngentask", "CompatTelRunner", "TiWorker", "MpCmdRun")) {
     Get-Process -Name $hog | Stop-Process -Force
 }
 
-# 2. Auto-Boost active user GUI applications (Games) & force ALL Logical Processors (Full Multi-Core Affinity Mask)
+# 2. Auto-Boost active user GUI applications (Games) & unlock full multi-core affinity
 $logicalCount = [Environment]::ProcessorCount
-$fullAffinityMask = if ($logicalCount -ge 64) { [IntPtr]::new(-1) } else { [IntPtr]::new(([int64]1 -shl $logicalCount) - 1) }
+# Only touch affinity when the mask actually fits into a 64-bit value (above that the API rejects it).
+$canSetAffinity = $logicalCount -gt 0 -and $logicalCount -le 62
+$fullAffinityMask = $null
+if ($canSetAffinity) { $fullAffinityMask = [IntPtr]::new(([int64]1 -shl $logicalCount) - 1) }
 
 $systemIgnore = @(
     "explorer", "taskmgr", "cmd", "powershell", "pwsh", "conhost", "dwm", "csrss", "winlogon",
     "svchost", "lsass", "services", "tailscaled", "tailscale-ipn", "rdpclip", "sihost", "ctfmon",
     "TextInputHost", "ShellExperienceHost", "SearchHost", "StartMenuExperienceHost",
-    "steamwebhelper", "Discord"
+    "steamwebhelper", "steam", "Discord", "Update", "ApplicationFrameHost", "SystemSettings"
 )
 Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($systemIgnore -notcontains $_.ProcessName) } | ForEach-Object {
     if ($_.PriorityClass -eq "Normal") {
         $_.PriorityClass = "AboveNormal"
     }
     # Unlock full vCPU thread affinity in case a 32-bit/legacy game locked itself to 1-2 cores!
-    $_.ProcessorAffinity = $fullAffinityMask
+    # Cast both sides to Int64: comparing IntPtr with -ne is unreliable in PowerShell.
+    if ($canSetAffinity -and ([int64]$_.ProcessorAffinity -ne [int64]$fullAffinityMask)) {
+        $_.ProcessorAffinity = $fullAffinityMask
+    }
 }
 
-# 3. Trim leaked background RAM if total memory > 78%
+# 3. Demote Chromium/Electron UIs that software-composite on a GPU-less host (biggest hidden FPS thief:
+#    steamwebhelper + Discord fall back to CPU rasterization and can pin a full core while AFK farming).
+foreach ($bg in @("steamwebhelper", "Discord")) {
+    Get-Process -Name $bg | Where-Object { $_.PriorityClass -ne "Idle" } | ForEach-Object {
+        $_.PriorityClass = "BelowNormal"
+    }
+}
+
+# 4. Keep Steam's Chromium UI GPU acceleration disabled (it would otherwise software-render via SwiftShader)
+$steamUser = Get-LocalUser -Name $SrdpUser
+if ($steamUser -and $steamUser.SID) {
+    $steamHive = "HKU\$($steamUser.SID.Value)\Software\Valve\Steam"
+    if (Test-Path "Registry::$steamHive") {
+        $wantFlags = "-cef-disable-gpu -cef-disable-gpu-compositing"
+        $curFlags = (Get-ItemProperty -Path "Registry::$steamHive" -Name "BrowserFlags").BrowserFlags
+        if ($curFlags -ne $wantFlags) {
+            New-ItemProperty -Path "Registry::$steamHive" -Name "BrowserFlags" -Value $wantFlags -PropertyType String -Force
+        }
+    }
+}
+
+# 5. Keep Discord hardware acceleration off (only when Discord is closed, so we never fight its own writes)
+if (-not (Get-Process -Name "Discord" -ErrorAction SilentlyContinue)) {
+    $discordSettings = "C:\Users\$SrdpUser\AppData\Roaming\discord\settings.json"
+    if (Test-Path $discordSettings) {
+        try {
+            $raw = Get-Content -Path $discordSettings -Raw -ErrorAction Stop
+            if ($raw -match '"enableHardwareAcceleration"\s*:\s*true') {
+                $raw = $raw -replace '"enableHardwareAcceleration"\s*:\s*true', '"enableHardwareAcceleration":false'
+                Set-Content -Path $discordSettings -Value $raw -Encoding UTF8 -NoNewline
+            }
+        } catch {}
+    }
+}
+
+# 6. Trim leaked background RAM if total memory > 78%
 $os = Get-CimInstance Win32_OperatingSystem
-$usedPct = (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100
-if ($usedPct -ge 78) {
-    Add-Type -TypeDefinition @"
-    using System;
-    using System.Runtime.InteropServices;
-    public class MemCleaner {
-        [DllImport("psapi.dll")]
-        public static extern int EmptyWorkingSet(IntPtr hwProc);
-    }
+if ($os -and $os.TotalVisibleMemorySize -gt 0) {
+    $usedPct = (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100
+    if ($usedPct -ge 78) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class MemCleaner {
+    [DllImport("psapi.dll")]
+    public static extern int EmptyWorkingSet(IntPtr hwProc);
+}
 "@
-    Get-Process | Where-Object { $_.MainWindowHandle -eq 0 } | ForEach-Object {
-        [void][MemCleaner]::EmptyWorkingSet($_.Handle)
+        Get-Process | Where-Object { $_.MainWindowHandle -eq 0 } | ForEach-Object {
+            [void][MemCleaner]::EmptyWorkingSet($_.Handle)
+        }
+        [System.GC]::Collect()
     }
-    [System.GC]::Collect()
 }
 '@
+$OptimizerLoopPs1 = $OptimizerLoopPs1.Replace('__RDP_USER__', $RdpUser)
 $OptimizerPath = "$SysScriptsDir\afk-guardian.ps1"
 Set-Content -Path $OptimizerPath -Value $OptimizerLoopPs1 -Encoding UTF8
 
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$OptimizerPath`""
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$OptimizerPath`""
 $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Hours 12)
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName "S-RDP-AfkGuardian" -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -Priority 4
+Register-ScheduledTask -TaskName "S-RDP-AfkGuardian" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Force | Out-Null
 
 Write-Host "==> [7/10] Configuring User Account & Console Auto-Logon..." -ForegroundColor Cyan
 $SecurePass = ConvertTo-SecureString $RdpPassword -AsPlainText -Force
 if (Get-LocalUser -Name $RdpUser -ErrorAction SilentlyContinue) {
-    Set-LocalUser -Name $RdpUser -Password $SecurePass -PasswordNeverExpires $true
+    Set-LocalUser -Name $RdpUser -Password $SecurePass -PasswordNeverExpires:$true
 } else {
-    New-LocalUser -Name $RdpUser -Password $SecurePass -FullName "AFK Gamer" -PasswordNeverExpires -AccountNeverExpires | Out-Null
+    New-LocalUser -Name $RdpUser -Password $SecurePass -FullName "AFK Gamer" -PasswordNeverExpires:$true -AccountNeverExpires:$true | Out-Null
 }
 
 foreach ($grp in @("Administrators", "Remote Desktop Users")) {
@@ -330,12 +502,13 @@ Set-ItemProperty -Path $PersonalizePolicy -Name "NoLockScreen" -Value 1 -Type DW
 Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Type DWord -Force
 Set-ItemProperty -Path $RdpWinStation -Name "UserAuthentication" -Value 0 -Type DWord -Force
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+Set-Service -Name "TermService" -StartupType Automatic -ErrorAction SilentlyContinue
 Restart-Service -Name "TermService" -Force -ErrorAction SilentlyContinue
 
 Write-Host "==> [8/10] Cleaning Runner Temp Files..." -ForegroundColor Cyan
 Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
 
-if ($InstallGameRuntimes -eq "true") {
+if (Test-SrdpTrue $InstallGameRuntimes) {
     Write-Host "==> [9/10] Checking & Installing Gaming Runtimes (DirectX 9/10/11 Legacy + Smart VC++ Check)..." -ForegroundColor Cyan
     # DirectX Legacy (June 2010 d3dx9_43.dll / xinput1_3.dll / d3dcompiler_43.dll — NOT pre-installed on Windows Server!)
     if (-not (Test-Path "$env:SystemRoot\System32\d3dx9_43.dll")) {
@@ -385,23 +558,68 @@ if ($InstallGameRuntimes -eq "true") {
     Write-Host "==> [9/10] Skipping Gaming Runtimes installation (disabled by input)." -ForegroundColor Yellow
 }
 
-if ($InstallMesa3D -eq "true") {
-    Write-Host "==> [9.5/10] Downloading Mesa3D Software Renderer (OpenGL/D3D CPU Acceleration Pack) to C:\Tools\Mesa3D..." -ForegroundColor Cyan
+if (Test-SrdpTrue $InstallMesa3D) {
+    Write-Host "==> [9.5/10] Deploying Mesa3D Software Renderer (llvmpipe OpenGL 4.5 for GPU-less games)..." -ForegroundColor Cyan
     try {
         $mesaDir = "C:\Tools\Mesa3D"
         New-Item -ItemType Directory -Path $mesaDir -Force | Out-Null
-        $releaseApi = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest" -UseBasicParsing
+
+        # Resolve 7-Zip explicitly (it is pre-installed on GitHub runners, but never assume %PATH%).
+        $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+        if (-not (Test-Path $sevenZip)) {
+            $sevenCmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
+            if ($sevenCmd) { $sevenZip = $sevenCmd.Source }
+        }
+
+        $releaseApi = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest" `
+            -Headers @{ "User-Agent" = "S-RDP-AFK" } -UseBasicParsing -ErrorAction Stop
         $asset = $releaseApi.assets | Where-Object { $_.name -match "release-msvc\.7z$" } | Select-Object -First 1
-        if ($asset) {
+        if (-not $asset) { throw "Aset mesa3d-*-release-msvc.7z tidak ditemukan pada rilis terbaru." }
+
+        if (Test-Path $sevenZip) {
             $archivePath = "$mesaDir\$($asset.name)"
             Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archivePath -UseBasicParsing
-            & 7z x $archivePath -o"$mesaDir" -y | Out-Null
+            & $sevenZip x $archivePath "-o$mesaDir" -y | Out-Null
             Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
-            Write-Host "    Mesa3D extracted to $mesaDir (Run perappdeploy.cmd inside if a game encounters OpenGL/GPU errors)." -ForegroundColor Green
+            Write-Host "    Mesa3D $($releaseApi.tag_name) diekstrak ke $mesaDir" -ForegroundColor Green
+        } else {
+            throw "7-Zip tidak ditemukan untuk mengekstrak paket Mesa3D."
+        }
+
+        # Optional system-wide deployment: replaces the inbox OpenGL 1.1 software driver (which is what makes
+        # old OpenGL games/emulators refuse to start or render at single digit FPS on a GPU-less VM).
+        if (Test-SrdpTrue $MesaSystemWide) {
+            $deployMap = @(
+                @{ Source = (Join-Path $mesaDir "x64"); Target = (Join-Path $env:SystemRoot "System32") },
+                @{ Source = (Join-Path $mesaDir "x86"); Target = (Join-Path $env:SystemRoot "SysWOW64") }
+            )
+            $dllNames = @("opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "dxil.dll", "libEGL.dll", "libGLESv2.dll")
+            $deployed = 0
+            foreach ($map in $deployMap) {
+                if (-not (Test-Path $map.Source)) { continue }
+                if (-not (Test-Path $map.Target)) { continue }
+                foreach ($dll in $dllNames) {
+                    $srcDll = Join-Path $map.Source $dll
+                    if (-not (Test-Path $srcDll)) { continue }
+                    $dstDll = Join-Path $map.Target $dll
+                    if ((Test-Path $dstDll) -and -not (Test-Path "$dstDll.srdp-bak")) {
+                        Copy-Item -Path $dstDll -Destination "$dstDll.srdp-bak" -Force -ErrorAction SilentlyContinue
+                    }
+                    Copy-Item -Path $srcDll -Destination $dstDll -Force -ErrorAction SilentlyContinue
+                    if (Test-Path $dstDll) { $deployed++ }
+                }
+            }
+            if ($deployed -gt 0) {
+                Write-Host "    System-wide OpenGL upgraded: $deployed DLL terpasang (backup asli: *.srdp-bak)." -ForegroundColor Green
+            } else {
+                Write-Warning "    System-wide deployment tidak menemukan DLL Mesa3D (periksa struktur arsip)."
+            }
         }
     } catch {
-        Write-Warning "    Could not download Mesa3D: $_"
+        Write-Warning "    Could not deploy Mesa3D: $_"
     }
+} else {
+    Write-Host "==> [9.5/10] Skipping Mesa3D deployment (disabled by input)." -ForegroundColor Yellow
 }
 
 # Final sweep of any .NET NGEN / Windows Installer workers spawned during setup
@@ -426,21 +644,29 @@ echo ========================================================
 echo.
 echo Koneksi RDP kamu akan terputus dalam 3 detik, TAPI layar
 echo game, auto-clicker, dan macro dipindahkan ke Console aktif
-echo (1280x720 @ 100%% DPI) sehingga TIDAK FREEZE di background!
+echo (1280x720 @ 100% DPI) sehingga TIDAK FREEZE di background!
 echo.
 echo TIPS: Gunakan RDP dengan resolusi 1280x720 agar posisi klik
-echo auto-clicker 100%% sama persis saat ditinggal AFK!
+echo auto-clicker 100% sama persis saat ditinggal AFK!
 echo.
 timeout /t 3 >nul
-for /f "tokens=3" %%s in ('query session ^| findstr /R /C:" Active "') do (
-    %windir%\System32\tscon.exe %%s /dest:console
+REM Handover berdasarkan Session ID proses ini sendiri (bebas salah-parse multi-user / spasi nama user)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(Get-Process -Id $PID).SessionId; & (Join-Path $env:windir 'System32\tscon.exe') $s /dest:console"
+if errorlevel 1 (
+    REM Fallback: pakai nama sesi aktif jika Session ID gagal dipindahkan
+    %windir%\System32\tscon.exe %SESSIONNAME% /dest:console
+)
+if errorlevel 1 (
+    echo.
+    echo [GAGAL] Handover ke Console ditolak. Jalankan file ini sebagai Administrator.
+    pause
 )
 '@
 Set-Content -Path "$PublicDesktop\AFK-Disconnect-Tanpa-Freeze.bat" -Value $KeepAliveBat -Encoding ASCII
 
 $StopRdpBat = @'
 @echo off
-title Stop & Backup S-RDP Session
+title Stop and Backup S-RDP Session
 echo ========================================================
 echo   SIMPAN DATA VAULT ^& MATIKAN SERVER RDP SEKARANG?
 echo ========================================================
@@ -464,10 +690,25 @@ OPTIMASI AKTIF DI SERVER INI:
   [v] Atomic AES-256 Anti-Reset Vault (Anti Data Corrupt/Hilang)
   [v] Instant Zero-Copy AppData Junctions (Steam & Discord Siap Pakai)
   [v] Windows Defender + .NET NGEN + Telemetry KILLED (CPU Idle ~1-3%)
-  [v] All 4 vCPU Threads Unparked @ 100% Boost Clock (AMD EPYC 3.24+ GHz)
-  [v] RDP 60 FPS Unlocked + AVC444/H.264 + Console Locked 1280x720 100% DPI
+  [v] All vCPU Threads Unparked @ 100% Boost Clock (AMD EPYC 3.24+ GHz)
+  [v] Console Locked 1280x720 @ 100% DPI (koordinat auto-clicker stabil)
+  [v] RDP Frame Pacing $RdpFps FPS + TermDD FlowControl dilepas (anti-slideshow)
+  [v] Mesa3D llvmpipe (OpenGL 4.5) + LP_NUM_THREADS disetel untuk 4 vCPU
+  [v] Steam CEF & Discord GPU acceleration dimatikan (hemat 1 core penuh!)
   [v] 20 GB Virtual Memory Pagefile + Fast NTFS I/O Cache
   [v] Auto Game Priority Booster + Auto RAM Cleaner (Tiap 5 Menit)
+
+KENAPA GAME DI SINI BISA 5 FPS (DAN CARA NAIKKANNYA):
+  Runner GitHub TIDAK punya GPU. Semua render 3D dihitung CPU (WARP/llvmpipe),
+  jadi resolusi & efek grafis adalah segalanya:
+   1. Jalankan game dalam mode WINDOWED 1280x720 atau 1024x768.
+   2. Matikan Shadow, Anti-Aliasing, Bloom, Motion Blur, Ray Tracing, V-Sync.
+   3. Set limit FPS in-game 30 (jangan 60 - CPU tidak akan sanggup).
+   4. Klik 2x "Optimalkan-Game-Ini.bat" lalu pilih file .exe game:
+      skrip akan memasang driver OpenGL Mesa khusus game itu, mematikan
+      Fullscreen Optimization DWM, dan membuat launcher hemat CPU.
+   5. Klik 2x "Cek-Performa-Render.bat" untuk melihat GPU/renderer aktif
+      serta proses yang paling banyak makan CPU.
 
 1. AGAR KOORDINAT AUTO-CLICKER TIDAK GESER SAAT AFK:
    - Disarankan atur Display Remote Desktop kamu ke resolusi 1280x720
@@ -480,9 +721,201 @@ OPTIMASI AKTIF DI SERVER INI:
    - Install/simpan semua game & bot di dalam "Folder-Permanen-Anti-Reset".
    - Klik "Simpan-Data-Sekarang.bat" kapan pun mau save manual, atau klik
      "Matikan-Server-RDP.bat" saat selesai (otomatis backup sebelum mati).
+
+3. TIP KLIEN RDP (di HP/PC kamu):
+   - Experience: pilih "LAN (10 Mbps or higher)".
+   - Color depth: 16-bit (lebih ringan untuk encoder software).
+   - Jangan pakai mode fullscreen borderless pada aplikasi RDP.
 ====================================================================
 "@
 Set-Content -Path "$PublicDesktop\BACA-PANDUAN-AFK-GAME.txt" -Value $GuideTxt -Encoding UTF8
+
+# ---------------------------------------------------------------------------
+# Per-game optimizer: the single most effective fix for a game that renders at 5 FPS on a GPU-less runner.
+# It deploys Mesa3D llvmpipe next to the game's executable (hardlink = 0 extra disk), forces the app to load
+# it, disables DWM fullscreen-optimization double composition, and writes a CPU-friendly launcher.
+# ---------------------------------------------------------------------------
+$OptimizeGamePs1 = @'
+$ErrorActionPreference = "SilentlyContinue"
+
+$exe = ""
+try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.Title = "Pilih file .exe game yang mau dioptimalkan (Naikkan FPS)"
+    $dlg.Filter = "Aplikasi game (*.exe)|*.exe|Semua file (*.*)|*.*"
+    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $exe = $dlg.FileName
+    }
+} catch {
+    # Windows Forms needs an STA thread; if the dialog cannot be shown, fall back to a typed path.
+    Write-Warning "Dialog file tidak bisa dibuka ($($_.Exception.Message))."
+}
+
+if ([string]::IsNullOrWhiteSpace($exe)) {
+    Write-Host "Tempel path lengkap file .exe game (contoh: D:\AFK-Data\Games\Game\game.exe)" -ForegroundColor Yellow
+    $typed = Read-Host "Path .exe"
+    if ($typed) { $exe = ([string]$typed).Trim().Trim('"') }
+}
+if ([string]::IsNullOrWhiteSpace($exe) -or -not (Test-Path -LiteralPath $exe)) {
+    Write-Host "File tidak ditemukan. Dibatalkan." -ForegroundColor Yellow
+    Start-Sleep -Seconds 3
+    exit 0
+}
+$dir = Split-Path $exe -Parent
+$base = [IO.Path]::GetFileNameWithoutExtension($exe)
+
+Write-Host ""
+Write-Host "==> Mengoptimalkan: $exe" -ForegroundColor Cyan
+
+# --- 1. Detect 32-bit vs 64-bit PE so we deploy the matching Mesa3D build -------------
+function Test-IsPe64 {
+    param([string]$Path)
+    try {
+        $fs = [IO.File]::OpenRead($Path)
+        $br = New-Object IO.BinaryReader($fs)
+        $fs.Position = 0x3C
+        $peOffset = $br.ReadInt32()
+        $fs.Position = $peOffset + 4
+        $machine = $br.ReadUInt16()
+        $fs.Close()
+        return ($machine -eq 0x8664)   # IMAGE_FILE_MACHINE_AMD64
+    } catch { return $true }
+}
+$is64 = Test-IsPe64 -Path $exe
+
+# --- 2. Deploy Mesa3D (llvmpipe OpenGL 4.5) beside the game -------------------------
+$mesaRoot = "C:\Tools\Mesa3D"
+$archDir = if ($is64) { Join-Path $mesaRoot "x64" } else { Join-Path $mesaRoot "x86" }
+$dllList = @("opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "dxil.dll")
+$deployed = 0
+if (Test-Path $archDir) {
+    foreach ($dll in $dllList) {
+        $src = Join-Path $archDir $dll
+        if (-not (Test-Path $src)) { continue }
+        $dst = Join-Path $dir $dll
+        if ((Test-Path $dst) -and -not (Test-Path "$dst.srdp-bak")) {
+            # Never silently destroy a DLL the game shipped itself (some older titles bundle ANGLE/GL).
+            Copy-Item -Path $dst -Destination "$dst.srdp-bak" -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -Path $dst -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType HardLink -Path $dst -Target $src -Force -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Test-Path $dst)) { Copy-Item -Path $src -Destination $dst -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $dst) { $deployed++ }
+    }
+    # .local marker forces stubborn executables to load the local OpenGL DLL instead of System32
+    Set-Content -Path "$exe.local" -Value "" -Encoding ASCII -ErrorAction SilentlyContinue
+    Write-Host "    Mesa3D $(if ($is64) { 'x64' } else { 'x86' }) dipasang di folder game ($deployed DLL)." -ForegroundColor Green
+} else {
+    Write-Host "    Mesa3D belum tersedia (C:\Tools\Mesa3D). Jalankan workflow dengan opsi install_mesa3d = true." -ForegroundColor Yellow
+}
+
+# --- 3. Kill DWM fullscreen-optimization double composition -------------------------
+$layers = "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"
+if (-not (Test-Path $layers)) { New-Item -Path $layers -Force | Out-Null }
+Set-ItemProperty -Path $layers -Name $exe -Value "~ DISABLEDXMAXIMIZEDWINDOWEDMODE HIGHDPIAWARE" -Type String -Force
+Write-Host "    Fullscreen Optimization DWM dimatikan (render langsung, tanpa komposisi ganda)." -ForegroundColor Green
+
+# --- 4. CPU-friendly launcher with tuned Mesa/llvmpipe environment ------------------
+$cpu = [Environment]::ProcessorCount
+$threads = [Math]::Max(2, $cpu - 1)
+$launcher = @"
+@echo off
+title $base (Mode Hemat CPU - S-RDP)
+set LP_NUM_THREADS=$threads
+set GALLIUM_DRIVER=llvmpipe
+set LIBGL_ALWAYS_SOFTWARE=1
+set mesa_glthread=true
+set vblank_mode=0
+set MESA_GL_VERSION_OVERRIDE=4.5
+set MESA_GLSL_VERSION_OVERRIDE=450
+cd /d "%~dp0"
+start "" "$exe"
+"@
+$launcherPath = Join-Path $dir "Jalankan-$base-Hemat-CPU.bat"
+Set-Content -Path $launcherPath -Value $launcher -Encoding ASCII
+Write-Host "    Launcher dibuat: $launcherPath" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "SELESAI! Buka game lewat file 'Jalankan-$base-Hemat-CPU.bat'." -ForegroundColor Cyan
+Write-Host "Kalau masih berat: turunkan resolusi ke 1024x768 / 800x600, matikan" -ForegroundColor Yellow
+Write-Host "Shadow + Anti-Aliasing + V-Sync, dan batasi FPS in-game ke 30." -ForegroundColor Yellow
+Write-Host ""
+Read-Host "Tekan Enter untuk menutup"
+'@
+$OptimizeGamePath = "$SysScriptsDir\optimize-game.ps1"
+Set-Content -Path $OptimizeGamePath -Value $OptimizeGamePs1 -Encoding UTF8
+
+$OptimizeGameBat = @"
+@echo off
+title Optimalkan Game - Naikkan FPS
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$OptimizeGamePath"
+"@
+Set-Content -Path "$PublicDesktop\Optimalkan-Game-Ini.bat" -Value $OptimizeGameBat -Encoding ASCII
+
+# ---------------------------------------------------------------------------
+# Render diagnostics: shows exactly which renderer is active and what is eating the CPU.
+# ---------------------------------------------------------------------------
+$RenderDiagPs1 = @'
+$ErrorActionPreference = "SilentlyContinue"
+
+Write-Host "======================================================================" -ForegroundColor Cyan
+Write-Host "  DIAGNOSTIK RENDER & PERFORMA S-RDP" -ForegroundColor Cyan
+Write-Host "======================================================================" -ForegroundColor Cyan
+
+Write-Host ""
+Write-Host "[1] ADAPTER GRAFIS (tidak ada GPU diskrit = render lewat CPU/WARP)" -ForegroundColor Yellow
+Get-CimInstance Win32_VideoController | ForEach-Object {
+    Write-Host ("    - {0} | Driver: {1} | Mode: {2}" -f $_.Name, $_.DriverVersion, $_.VideoModeDescription)
+}
+
+Write-Host ""
+Write-Host "[2] OPENGL (Mesa3D / llvmpipe)" -ForegroundColor Yellow
+$glDll = Join-Path $env:SystemRoot "System32\opengl32.dll"
+if (Test-Path $glDll) {
+    $ver = (Get-Item $glDll).VersionInfo
+    Write-Host ("    opengl32.dll : {0} / {1}" -f $ver.FileVersion, $ver.CompanyName)
+}
+if (Test-Path "$glDll.srdp-bak") {
+    Write-Host "    System-wide Mesa3D : AKTIF (backup driver asli tersimpan)" -ForegroundColor Green
+} else {
+    Write-Host "    System-wide Mesa3D : belum/tidak aktif" -ForegroundColor Yellow
+}
+if (Test-Path "C:\Tools\Mesa3D\x64") { Write-Host "    Paket Mesa3D       : C:\Tools\Mesa3D (OK)" -ForegroundColor Green }
+foreach ($v in @("LP_NUM_THREADS", "GALLIUM_DRIVER", "mesa_glthread", "vblank_mode", "MESA_GL_VERSION_OVERRIDE")) {
+    Write-Host ("    {0} = {1}" -f $v, [Environment]::GetEnvironmentVariable($v, "Machine"))
+}
+
+Write-Host ""
+Write-Host "[3] KONFIG RDP / DWM" -ForegroundColor Yellow
+$dwm = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations" -Name DWMFRAMEINTERVAL).DWMFRAMEINTERVAL
+$ts  = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+if ($dwm) { Write-Host ("    DWMFRAMEINTERVAL = {0} ms (~{1} FPS)" -f $dwm, [Math]::Round(1000 / $dwm)) }
+Write-Host ("    AVC444ModePreferred      = {0}" -f $ts.AVC444ModePreferred)
+Write-Host ("    AVCHardwareEncodePreferred = {0}" -f $ts.AVCHardwareEncodePreferred)
+Write-Host ("    VGOptimization_CaptureFrameRate = {0}" -f $ts.VGOptimization_CaptureFrameRate)
+
+Write-Host ""
+Write-Host "[4] 10 PROSES PALING BANYAK MAKAN CPU" -ForegroundColor Yellow
+Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name, Id, @{N = "CPU(s)"; E = { [Math]::Round($_.CPU, 1) } }, @{N = "RAM(MB)"; E = { [Math]::Round($_.WorkingSet64 / 1MB, 1) } }, PriorityClass | Format-Table -AutoSize
+
+Write-Host "[5] PEMAKAIAN MEMORI" -ForegroundColor Yellow
+$os = Get-CimInstance Win32_OperatingSystem
+$usedGb = [Math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 1)
+$totalGb = [Math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+Write-Host ("    RAM: {0} / {1} GB | CPU Logical: {2}" -f $usedGb, $totalGb, [Environment]::ProcessorCount)
+Write-Host ""
+Read-Host "Tekan Enter untuk menutup"
+'@
+$RenderDiagPath = "$SysScriptsDir\render-diagnostics.ps1"
+Set-Content -Path $RenderDiagPath -Value $RenderDiagPs1 -Encoding UTF8
+
+$RenderDiagBat = @"
+@echo off
+title Cek Performa Render
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$RenderDiagPath"
+"@
+Set-Content -Path "$PublicDesktop\Cek-Performa-Render.bat" -Value $RenderDiagBat -Encoding ASCII
 
 Write-Host "==> Zero-Cost Maximum AFK Optimization Complete!" -ForegroundColor Green
 $global:LASTEXITCODE = 0

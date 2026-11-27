@@ -31,12 +31,12 @@ on:
           - "windows-2022-32core"
           - "windows-2022-64core"
       rdp_user:
-        description: "Username Login RDP"
+        description: "Username Login RDP (1-20 karakter: huruf, angka, titik, _ , -)"
         required: true
         default: "gamer"
         type: string
       hostname:
-        description: "Nama Perangkat di Tailscale"
+        description: "Nama Perangkat di Tailscale (huruf kecil, angka, strip; maks 63)"
         required: true
         default: "s-rdp-afk"
         type: string
@@ -61,10 +61,25 @@ on:
         default: true
         type: boolean
       install_mesa3d:
-        description: "Download Mesa3D Software GPU Renderer (Aktifkan hanya jika game menolak jalan tanpa OpenGL/GPU)"
+        description: "Deploy Mesa3D llvmpipe (OpenGL 4.5) untuk runner tanpa GPU — WAJIB untuk game OpenGL / emulator"
         required: false
-        default: false
+        default: true
         type: boolean
+      tune_rendering:
+        description: "Tuning renderer GPU-less (LP_NUM_THREADS, mesa_glthread, vblank off, RDP encoder hemat CPU)"
+        required: false
+        default: true
+        type: boolean
+      rdp_fps:
+        description: "Batas FPS komposisi desktop RDP (30 = paling seimbang untuk render CPU; 60 hanya untuk runner ber-GPU)"
+        required: false
+        default: "30"
+        type: choice
+        options:
+          - "15"
+          - "24"
+          - "30"
+          - "60"
       cleanup_sdk_space:
         description: "Bersihkan SDK bawaan GitHub (Android/GHC/CodeQL) untuk tambah ~30GB ruang kosong SSD"
         required: false
@@ -95,6 +110,9 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
+          SETUP_USER: ${{ inputs.rdp_user }}
+          TS_HOSTNAME: ${{ inputs.hostname }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
             Write-Error "Secret 'TS_AUTHKEY' belum diatur! Buka Settings -> Secrets and variables -> Actions -> New repository secret, lalu tambahkan TS_AUTHKEY dari Tailscale Admin Console."
@@ -109,7 +127,32 @@ jobs:
             Write-Error "RDP_PASSWORD terlalu pendek! Windows Server mewajibkan minimal 8 karakter dengan kombinasi huruf besar, huruf kecil, dan angka/simbol."
             exit 1
           }
-          Write-Host "Secret TS_AUTHKEY & RDP_PASSWORD terdeteksi dengan benar." -ForegroundColor Green
+          if ($env:RDP_PASSWORD.Contains('"')) {
+            Write-Error "RDP_PASSWORD tidak boleh mengandung karakter kutip ganda ("" ) karena dipakai sebagai argumen 7-Zip (-p""..."")."
+            exit 1
+          }
+
+          $vaultPass = $env:VAULT_PASSWORD
+          if (-not [string]::IsNullOrWhiteSpace($vaultPass) -and $vaultPass.Contains('"')) {
+            Write-Error "VAULT_PASSWORD tidak boleh mengandung karakter kutip ganda ("" )."
+            exit 1
+          }
+
+          # Input bebas ini dipakai sebagai nama folder (C:\Users\<user>) dan argumen icacls, jadi wajib difilter
+          # agar tidak bisa dipakai untuk path traversal / command injection.
+          if ($env:SETUP_USER -notmatch '^[A-Za-z0-9._-]{1,20}$') {
+            Write-Error "Username RDP tidak valid! Gunakan 1-20 karakter: huruf, angka, titik, garis bawah, atau strip. Contoh: gamer"
+            exit 1
+          }
+          if ($env:SETUP_USER -eq '.' -or $env:SETUP_USER -eq '..') {
+            Write-Error "Username RDP tidak boleh '.' atau '..'"
+            exit 1
+          }
+          if ($env:TS_HOSTNAME -notmatch '^[a-z0-9][a-z0-9-]{0,62}$') {
+            Write-Error "Nama perangkat Tailscale tidak valid! Gunakan huruf kecil, angka, dan strip (maks 63 karakter), contoh: s-rdp-afk"
+            exit 1
+          }
+          Write-Host "Secret TS_AUTHKEY & RDP_PASSWORD serta input Username/Hostname terdeteksi valid." -ForegroundColor Green
 
       - name: (Opsional) Bersihkan Disk untuk Game Ukuran Besar (+30GB Free)
         if: ${{ inputs.cleanup_sdk_space == true }}
@@ -123,10 +166,10 @@ jobs:
             "C:\Program Files\dotnet\sdk",
             "D:\a\_temp"
           )
-          foreach ($dir in $Targets) {
-            if (Test-Path $dir) {
-              Write-Host "Menghapus $dir ..."
-              cmd /c "rmdir /s /q `"$dir`"" 2>$null
+          foreach ($targetPath in $Targets) {
+            if (Test-Path -LiteralPath $targetPath) {
+              Write-Host "Menghapus $targetPath ..."
+              Remove-Item -LiteralPath $targetPath -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
           Get-PSDrive C, D -ErrorAction SilentlyContinue | Format-Table Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}
@@ -140,12 +183,19 @@ jobs:
           SETUP_PASS: ${{ secrets.RDP_PASSWORD }}
           INSTALL_RUNTIMES: ${{ inputs.install_game_runtimes }}
           INSTALL_MESA: ${{ inputs.install_mesa3d }}
+          TUNE_RENDERING: ${{ inputs.tune_rendering }}
+          RDP_FPS: ${{ inputs.rdp_fps }}
         run: |
+          $fps = 30
+          if (-not [int]::TryParse("$($env:RDP_FPS)".Trim(), [ref]$fps)) { $fps = 30 }
           & .\scripts\setup-afk-windows.ps1 `
             -RdpUser $env:SETUP_USER `
             -RdpPassword $env:SETUP_PASS `
-            -InstallGameRuntimes "$($env:INSTALL_RUNTIMES)".ToLower() `
-            -InstallMesa3D "$($env:INSTALL_MESA)".ToLower()
+            -InstallGameRuntimes "$($env:INSTALL_RUNTIMES)" `
+            -InstallMesa3D "$($env:INSTALL_MESA)" `
+            -TuneRendering "$($env:TUNE_RENDERING)" `
+            -RdpFps $fps
+          if ($LASTEXITCODE -ne 0) { throw "setup-afk-windows.ps1 gagal (exit $LASTEXITCODE)" }
 
       - name: Pulihkan Data Permanen (Steam, Discord, & Atomic Vault AES-256)
         if: ${{ inputs.enable_vault_sync == true }}
@@ -160,7 +210,8 @@ jobs:
             -Mode "restore" `
             -VaultPassword $env:VAULT_PASS `
             -RdpUser $env:SETUP_USER `
-            -InstallApps "$($env:INSTALL_APPS)".ToLower()
+            -InstallApps "$($env:INSTALL_APPS)"
+          if ($LASTEXITCODE -ne 0) { throw "sync-vault.ps1 (restore) gagal (exit $LASTEXITCODE)" }
 
       - name: Install & Hubungkan Tailscale VPN
         uses: tailscale/github-action@v3
@@ -177,15 +228,25 @@ jobs:
           DURATION: ${{ inputs.duration_minutes }}
           VAULT_ENABLED: ${{ inputs.enable_vault_sync }}
           AUTO_CHAIN: ${{ inputs.auto_restart_chain }}
+          RDP_FPS: ${{ inputs.rdp_fps }}
+          MESA_ENABLED: ${{ inputs.install_mesa3d }}
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
           if (-not (Test-Path $tsExe)) {
             $tsCmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
             if ($tsCmd) { $tsExe = $tsCmd.Source }
           }
-          $tsIp = (& $tsExe ip -4 | Select-Object -First 1).Trim()
-          $tsStatus = (& $tsExe status --json | ConvertFrom-Json)
-          $dnsName = $tsStatus.Self.DNSName.TrimEnd('.')
+          $tsIp = ""
+          if (Test-Path $tsExe) {
+            $tsIp = ((& $tsExe ip -4 2>$null | Select-Object -First 1) -as [string])
+            if ($tsIp) { $tsIp = $tsIp.Trim() } else { $tsIp = "" }
+          }
+          $dnsName = ""
+          try {
+            $tsStatus = (& $tsExe status --json 2>$null | ConvertFrom-Json -ErrorAction Stop)
+            if ($tsStatus.Self.DNSName) { $dnsName = $tsStatus.Self.DNSName.TrimEnd('.') }
+          } catch {}
+          if ([string]::IsNullOrWhiteSpace($tsIp)) { $tsIp = "(lihat log Tailscale di atas)" }
 
           $freeC = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
           $freeD = if (Get-PSDrive D -ErrorAction SilentlyContinue) { [math]::Round((Get-PSDrive D).Free / 1GB, 1) } else { 0 }
@@ -196,6 +257,21 @@ jobs:
           $osRamGb = [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize / 1MB, 1)
           $vaultRoot = if (Test-Path "C:\ProgramData\S-RDP\vault-root.txt") { (Get-Content "C:\ProgramData\S-RDP\vault-root.txt" -Raw).Trim() } else { "Nonaktif" }
 
+          # --- Renderer / FPS diagnostics -------------------------------------------------
+          $gpuAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
+          $realGpu = @($gpuAdapters | Where-Object {
+            $_.Name -and
+            $_.Name -notmatch 'Microsoft Basic (Render|Display)' -and
+            $_.Name -notmatch 'Remote Display Adapter' -and
+            $_.Name -notmatch 'Microsoft Hyper-V Video' -and
+            $_.Name -notmatch 'Standard VGA'
+          })
+          $renderPath = if ($realGpu.Count -gt 0) { "Hardware GPU: $($realGpu[0].Name)" } else { "Software (WARP DirectX + Mesa3D llvmpipe OpenGL)" }
+          $mesaActive = if (Test-Path "$env:SystemRoot\System32\opengl32.dll.srdp-bak") { "AKTIF (OpenGL 4.5)" } else { "tidak aktif" }
+          $dwmInterval = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations" -Name DWMFRAMEINTERVAL -ErrorAction SilentlyContinue).DWMFRAMEINTERVAL
+          $fpsLabel = if ($dwmInterval) { "$([math]::Round(1000 / $dwmInterval)) FPS" } else { "default Windows" }
+          $rasterThreads = [Environment]::GetEnvironmentVariable("LP_NUM_THREADS", "Machine")
+
           Write-Host ""
           Write-Host "================================================================" -ForegroundColor Green
           Write-Host "   S-RDP (AFK GAMING EDITION) SUDAH AKTIF & SIAP DIGUNAKAN!     " -ForegroundColor Green
@@ -204,7 +280,9 @@ jobs:
           if ($dnsName) {
             Write-Host " MagicDNS Hostname   : $dnsName" -ForegroundColor Yellow
           }
-          Write-Host " Port RDP            : 3389 (60 FPS + AVC444 Unlocked)"
+          Write-Host " Port RDP            : 3389 (Frame pacing $fpsLabel)"
+          Write-Host " Jalur Render        : $renderPath"
+          Write-Host " Mesa3D OpenGL       : $mesaActive (LP_NUM_THREADS=$rasterThreads)"
           Write-Host " Username            : $($env:RDP_USER)" -ForegroundColor Cyan
           Write-Host " Password            : (Sesuai Secret RDP_PASSWORD kamu)" -ForegroundColor Cyan
           Write-Host " Hardware Runner     : $cpuName ($cpuCores Cores / $cpuThreads vCPU Threads) | $osRamGb GB RAM"
@@ -218,6 +296,8 @@ jobs:
           Write-Host "    sama persis 100% dengan layar Console AFK!"
           Write-Host " 2. Saat mau tutup RDP & tinggal AFK, klik 2x"
           Write-Host "    'AFK-Disconnect-Tanpa-Freeze.bat' di Desktop!"
+          Write-Host " 3. Kalau game masih 5 FPS: klik 2x 'Optimalkan-Game-Ini.bat',"
+          Write-Host "    pilih .exe game, lalu jalankan lewat launcher hemat CPU yang dibuat."
           Write-Host "================================================================" -ForegroundColor Green
 
           $summaryLines = @(
@@ -231,6 +311,8 @@ jobs:
             "| **Password** | Sesuai GitHub Secret ``RDP_PASSWORD`` |",
             "| **Spesifikasi Mesin** | ``$cpuName`` (**$cpuCores Cores / $cpuThreads vCPU Threads**, **$osRamGb GB RAM + 20 GB Pagefile**) |",
             "| **Folder Anti-Reset** | ``$vaultRoot`` *(Atomic AES-256 Backup ke GitHub Release ``s-rdp-vault``)* |",
+            "| **Jalur Render** | ``$renderPath`` — Mesa3D OpenGL: **$mesaActive** (`LP_NUM_THREADS=$rasterThreads`) |",
+            "| **Frame Pacing RDP** | ``$fpsLabel`` *(turunkan ke 24/15 bila CPU masih penuh)* |",
             "| **Resolusi Console AFK** | ``1280x720 @ 100% DPI`` *(Samakan resolusi aplikasi RDP ke 1280x720 untuk Auto-Clicker)* |",
             "| **Auto-Restart 24/7** | ``$($env:AUTO_CHAIN)`` |",
             "| **Kapasitas Kosong** | ``C:\`` **$freeC GB** / ``D:\`` **$freeD GB** |",
@@ -240,7 +322,8 @@ jobs:
             "- **Steam & Discord** siap di Desktop (menggunakan *Instant NTFS Junction* — tidak makan ruang ganda & bebas profil korup).",
             "- Simpan semua game/bot di dalam **``$vaultRoot``** (klik shortcut **``Folder-Permanen-Anti-Reset``** di Desktop).",
             "- Klik 2x **``AFK-Disconnect-Tanpa-Freeze.bat``** saat ingin menutup RDP agar game tetap jalan 100%.",
-            "- Klik 2x **``Simpan-Data-Sekarang.bat``** kapan saja untuk live-save tanpa menutup game, atau **``Matikan-Server-RDP.bat``** saat selesai."
+            "- Klik 2x **``Simpan-Data-Sekarang.bat``** kapan saja untuk live-save tanpa menutup game, atau **``Matikan-Server-RDP.bat``** saat selesai.",
+            "- **Game 5 FPS?** Klik 2x **``Optimalkan-Game-Ini.bat``** lalu pilih file ``.exe`` game (memasang Mesa3D llvmpipe + mematikan komposisi ganda DWM + membuat launcher hemat CPU), dan pakai **``Cek-Performa-Render.bat``** untuk melihat renderer & proses yang paling berat."
           )
           ($summaryLines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
@@ -368,6 +451,8 @@ jobs:
             -f auto_restart_chain="${{ inputs.auto_restart_chain }}" `
             -f install_game_runtimes="${{ inputs.install_game_runtimes }}" `
             -f install_mesa3d="${{ inputs.install_mesa3d }}" `
+            -f tune_rendering="${{ inputs.tune_rendering }}" `
+            -f rdp_fps="${{ inputs.rdp_fps }}" `
             -f cleanup_sdk_space="${{ inputs.cleanup_sdk_space }}"
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "Untuk estafet berantai tanpa batas (>2 sesi berturut-turut), tambahkan Classic Personal Access Token (scope: repo, workflow) ke secret 'PAT_TOKEN' karena GITHUB_TOKEN standar dibatasi oleh aturan anti-loop GitHub."

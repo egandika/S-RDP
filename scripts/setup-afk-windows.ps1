@@ -835,7 +835,21 @@ KENAPA GAME DI SINI BISA 5 FPS (DAN CARA NAIKKANNYA):
      pakai mouse/trackpad mode. Matikan "Enhance pointer precision" di Windows lokal.
    - Jedanya di dalam game = waktu render 1 frame: kecilkan resolusi & efek grafis.
 
-4. TIP KLIEN RDP (di HP/PC kamu):
+4. LORDS MOBILE / GAME MOBILE LAIN (JANGAN PAKAI EMULATOR):
+   - Emulator Android (BlueStacks, LDPlayer, MuMu) TIDAK BISA jalan di runner
+     GitHub karena tidak ada nested virtualization. Cek sendiri lewat
+     "Cek-Performa-Render.bat" bagian [6] VIRTUALISASI.
+   - Lords Mobile punya versi PC RESMI di Steam (gratis, AppID 1041320):
+     1) Klik "Pasang-Lords-Mobile.bat" di Desktop, ikuti dialog Steam.
+     2) Setelah selesai, jalankan "Lords-Mobile.bat" (sudah 1280x720 windowed
+        + env llvmpipe paling hemat CPU).
+     3) Di dalam game: Graphics Low, Effect OFF, FPS limit 30.
+   - Alternatif tanpa Steam: client PC resmi di lordsmobile.igg.com/pc.
+   - Di dalam game: pasang Shield sebelum AFK, dan klik
+     "AFK-Disconnect-Tanpa-Freeze.bat" (BUKAN tombol X) supaya kota tetap
+     memproduksi resource saat RDP ditutup.
+
+5. TIP KLIEN RDP (di HP/PC kamu):
    - Experience: pilih "LAN (10 Mbps or higher)".
    - Color depth: 16-bit (lebih ringan untuk encoder software).
    - Jangan pakai mode fullscreen borderless pada aplikasi RDP.
@@ -1036,6 +1050,23 @@ $os = Get-CimInstance Win32_OperatingSystem
 $usedGb = [Math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 1)
 $totalGb = [Math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
 Write-Host ("    RAM: {0} / {1} GB | CPU Logical: {2}" -f $usedGb, $totalGb, [Environment]::ProcessorCount)
+
+Write-Host ""
+Write-Host "[6] VIRTUALISASI (syarat emulator Android: BlueStacks / LDPlayer / MuMu)" -ForegroundColor Yellow
+$cpuVirt = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($cpuVirt) {
+    Write-Host ("    VMMonitorModeExtensions (VT-x/AMD-V) : {0}" -f $cpuVirt.VMMonitorModeExtensions)
+    Write-Host ("    VirtualizationFirmwareEnabled         : {0}" -f $cpuVirt.VirtualizationFirmwareEnabled)
+    Write-Host ("    SLAT (Second Level Address Translation): {0}" -f $cpuVirt.SecondLevelAddressTranslationExtensions)
+    if ($cpuVirt.VMMonitorModeExtensions) {
+        Write-Host "    -> Emulator Android BISA jalan di mesin ini." -ForegroundColor Green
+    } else {
+        Write-Host "    -> Emulator Android TIDAK BISA jalan: runner GitHub tanpa nested virtualization." -ForegroundColor Yellow
+        Write-Host "       Pakai versi PC resmi: Lords Mobile di Steam (AppID 1041320) atau lordsmobile.igg.com/pc." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "    Data CPU tidak tersedia." -ForegroundColor Yellow
+}
 Write-Host ""
 Read-Host "Tekan Enter untuk menutup"
 '@

@@ -289,6 +289,9 @@ function Link-PersistFolder {
 Link-PersistFolder -UserPath "`$env:APPDATA\discord"      -VaultPath "`$DriveRoot\ProfileBackup\Roaming\discord"
 Link-PersistFolder -UserPath "`$env:LOCALAPPDATA\Discord" -VaultPath "`$DriveRoot\ProfileBackup\Local\Discord"
 Link-PersistFolder -UserPath "`$env:LOCALAPPDATA\Steam"   -VaultPath "`$DriveRoot\ProfileBackup\Local\Steam"
+# LocalLow = tempat Unity / game mobile-port menyimpan setting, cache login, & PlayerPrefs.
+# Di-junction ke Vault supaya akun Lords Mobile / game Unity lain tidak perlu login ulang tiap sesi.
+Link-PersistFolder -UserPath "`$env:USERPROFILE\AppData\LocalLow" -VaultPath "`$DriveRoot\ProfileBackup\LocalLow"
 
 # Support custom extra folders defined by user in extra-roaming-folders.txt / extra-local-folders.txt
 if (Test-Path "`$DriveRoot\extra-roaming-folders.txt") {
@@ -307,6 +310,10 @@ if (Test-Path "`$DriveRoot\extra-local-folders.txt") {
 # Import Steam AutoLoginUser & SteamPath into HKCU immediately on logon
 if (Test-Path "`$DriveRoot\ProfileBackup\steam-hkcu.reg") {
     reg import "`$DriveRoot\ProfileBackup\steam-hkcu.reg" >`$null 2>&1
+}
+# Kunci registry milik game (setting grafis, PlayerPrefs/token login, dsb) ikut dipulihkan.
+Get-ChildItem -Path "`$DriveRoot\ProfileBackup" -Filter "hkcu-*.reg" -File -ErrorAction SilentlyContinue | ForEach-Object {
+    reg import `$_.FullName >`$null 2>&1
 }
 if (Test-Path "`$DriveRoot\Steam\steam.exe") {
     `$sp = (`$DriveRoot -replace '\\', '/') + '/Steam'
@@ -421,6 +428,61 @@ timeout /t 5
 "@
     Set-Content -Path "$PublicDesktop\AutoStart-Steam.bat" -Value $AutoStartSteamBat -Encoding ASCII
 
+    # Template kunci registry game tambahan (opsional). Baris berawalan # = komentar.
+    $HkcuKeysTemplate = "$DriveRoot\extra-hkcu-keys.txt"
+    if (-not (Test-Path $HkcuKeysTemplate)) {
+        Set-Content -Path $HkcuKeysTemplate -Encoding ASCII -Value @(
+            "# Satu kunci registry per baris, TANPA awalan HKCU\ . Kunci ini ikut di-backup & dipulihkan tiap sesi.",
+            "# Contoh:",
+            "# Software\Blizzard Entertainment",
+            "# Software\miHoYo"
+        )
+    }
+
+    # Lords Mobile PC resmi (Steam AppID 1041320) - tanpa emulator, karena runner tanpa nested virtualization.
+    $SteamPathForGame = "$DriveRoot\Steam\steam.exe"
+    $LogicalCores = [Environment]::ProcessorCount
+    $LpThreads = [Math]::Max(2, $LogicalCores - 1)
+    $LordsInstallBat = @"
+@echo off
+title Pasang Lords Mobile dari Steam
+echo ======================================================================
+echo  LORDS MOBILE - VERSI PC RESMI - INSTAL DARI STEAM
+echo ======================================================================
+if not exist "$SteamPathForGame" (
+    echo Steam belum terpasang. Buka "Steam.lnk" sekali dulu, lalu jalankan file ini lagi.
+    timeout /t 10
+    exit /b
+)
+echo Membuka Steam ke halaman instal Lords Mobile...
+start "" "$SteamPathForGame" "steam://install/1041320"
+echo.
+echo Ikuti dialog Steam dan tunggu unduhan selesai.
+echo Setelah selesai, jalankan "Lords-Mobile.bat" di Desktop.
+timeout /t 15
+"@
+    Set-Content -Path "$PublicDesktop\Pasang-Lords-Mobile.bat" -Value $LordsInstallBat -Encoding ASCII
+
+    $LordsRunBat = @"
+@echo off
+title Lords Mobile - S-RDP
+set LIBGL_ALWAYS_SOFTWARE=1
+set GALLIUM_DRIVER=llvmpipe
+set LP_NUM_THREADS=$LpThreads
+set MESA_NO_ERROR=1
+set mesa_glthread=true
+set vblank_mode=0
+set MESA_GL_VERSION_OVERRIDE=4.5
+set MESA_GLSL_VERSION_OVERRIDE=450
+if not exist "$SteamPathForGame" (
+    echo Steam belum terpasang. Buka "Steam.lnk" dulu.
+    timeout /t 8
+    exit /b
+)
+start "" "$SteamPathForGame" -applaunch 1041320 -screen-fullscreen 0 -screen-width 1280 -screen-height 720
+"@
+    Set-Content -Path "$PublicDesktop\Lords-Mobile.bat" -Value $LordsRunBat -Encoding ASCII
+
     Set-Content -Path "$StateDir\vault-root.txt" -Value $DriveRoot -Encoding ASCII
 }
 
@@ -454,7 +516,8 @@ if ($Mode -eq "backup") {
         foreach ($pair in @(
             @{ Src = "$UserHome\AppData\Roaming\discord"; Dst = "$DriveRoot\ProfileBackup\Roaming\discord" },
             @{ Src = "$UserHome\AppData\Local\Discord";   Dst = "$DriveRoot\ProfileBackup\Local\Discord" },
-            @{ Src = "$UserHome\AppData\Local\Steam";     Dst = "$DriveRoot\ProfileBackup\Local\Steam" }
+            @{ Src = "$UserHome\AppData\Local\Steam";     Dst = "$DriveRoot\ProfileBackup\Local\Steam" },
+            @{ Src = "$UserHome\AppData\LocalLow";         Dst = "$DriveRoot\ProfileBackup\LocalLow" }
         )) {
             if (Test-Path $pair.Src) {
                 $item = Get-Item $pair.Src -Force -ErrorAction SilentlyContinue
@@ -475,6 +538,34 @@ if ($Mode -eq "backup") {
                     Set-Content -Path "$DriveRoot\ProfileBackup\steam-hkcu.reg" -Encoding Unicode
                 Remove-Item "$env:TEMP\steam-hku.reg" -Force -ErrorAction SilentlyContinue
             }
+        }
+    } catch {}
+
+    # Export kunci HKCU milik game (setting grafis + PlayerPrefs/token login) supaya tidak hilang tiap sesi.
+    # Tambah kunci lain di D:\AFK-Data\extra-hkcu-keys.txt (satu kunci per baris, tanpa "HKCU\").
+    try {
+        if (-not $UserSid) { $UserSid = (Get-LocalUser -Name $RdpUser -ErrorAction SilentlyContinue).SID.Value }
+        $HkcuGameKeys = @("Software\IGG", "Software\IGG.COM", "Software\LordsMobile", "Software\Unity", "Software\Tencent")
+        $HkcuKeysFile = "$DriveRoot\extra-hkcu-keys.txt"
+        if (Test-Path $HkcuKeysFile) {
+            $HkcuGameKeys += @(Get-Content $HkcuKeysFile -ErrorAction SilentlyContinue |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.Trim().StartsWith("#") } |
+                ForEach-Object { $_.Trim() })
+        }
+        if ($UserSid) {
+            foreach ($hk in $HkcuGameKeys) {
+                $safeName = ($hk -replace '[\\/:*?"<>|]', '_')
+                & reg query "HKU\$UserSid\$hk" >$null 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    & reg export "HKU\$UserSid\$hk" "$env:TEMP\hkcu-export.reg" /y >$null 2>&1
+                    if (Test-Path "$env:TEMP\hkcu-export.reg") {
+                        (Get-Content "$env:TEMP\hkcu-export.reg") -replace [regex]::Escape("HKEY_USERS\$UserSid"), "HKEY_CURRENT_USER" |
+                            Set-Content -Path "$DriveRoot\ProfileBackup\hkcu-$safeName.reg" -Encoding Unicode
+                        Remove-Item "$env:TEMP\hkcu-export.reg" -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+            Write-Host "    Kunci registry game ikut tersimpan (hkcu-*.reg)." -ForegroundColor DarkGray
         }
     } catch {}
 

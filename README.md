@@ -137,6 +137,33 @@ Saat kamu sudah menyalakan game, bot, atau auto-clicker di dalam RDP dan ingin m
 
 ---
 
+## ⌨️ Klik / Ketik Terasa Ada Jeda? (Input Latency)
+
+Jeda saat klik di RDP datang dari **4 sumber**, dan yang pertama paling sering: **rute jaringan Tailscale**.
+
+| # | Sumber jeda | Status di repo ini |
+| :-- | :--- | :--- |
+| 1 | **Koneksi lewat RELAY DERP** (bukan direct) → tiap klik menempuh rute jauh (50–300 ms) | Workflow sekarang **mengukur & melaporkan** di Summary: baris **Latensi Tailscale** + daftar peer `DIRECT (...) / RELAY ...`. Kalau muncul *RELAY DERP* → itu penyebabnya, bukan server. |
+| 2 | **`MenuShowDelay` & `MouseHoverTime` default 400 ms** (Windows sengaja menunda menu/tombol) | Ditimpa jadi **0 ms** (Default Hive + logon script, jadi aktif sejak logon pertama) |
+| 3 | **Pointer acceleration** ("Enhance pointer precision") + bayangan/jejak kursor | `MouseSpeed/Threshold=0`, `SmoothMouse*Curve` dinolkan, `CursorShadow=0`, `MouseTrails=0`, `ClickLock=0` |
+| 4 | **Animasi drag & key-repeat lambat** | `DragFullWindows=0`, `ActiveWndTrkTimeout=0`, `KeyboardDelay=0`, `KeyboardSpeed=31` |
+
+Nilai tersebut langsung diterapkan ke sesi berjalan lewat `SystemParametersInfo` (`SPI_SETMENUSHOWDELAY`, `SPI_SETKEYBOARDDELAY`, `SPI_SETKEYBOARDSPEED`), jadi tidak perlu logout.
+
+### Yang harus kamu atur di sisi klien (HP/PC) — ini yang paling menentukan
+1. **Experience: `LAN (10 Mbps or higher)`** — jangan `Detect connection quality`. Auto-detect sering menurunkan mode grafis dan menambah jeda input.
+2. **Color depth `16-bit`** (di tab Display) — encoder software lebih cepat = frame sampai lebih awal.
+3. **Matikan "Enhance pointer precision"** di Windows lokalmu: *Settings → Bluetooth & devices → Mouse → Additional mouse settings → Pointer Options → uncheck*.
+4. **HP/tablet: matikan mode sentuh / "tap and hold"** di aplikasi Remote Desktop. Mode sentuh menahan klik ~0,5–1 detik untuk menebak klik-kanan — ini bukan lag server, tapi terasa seperti lag. Pakai **mouse mode / trackpad mode**.
+5. Jangan pakai **fullscreen borderless** pada aplikasi RDP.
+
+### Kalau jedanya di dalam game (bukan menu Windows)
+Jeda itu = **waktu render 1 frame**. Di runner tanpa GPU artinya 50–150 ms saat game berat. Yang menurunkan: **resolusi lebih kecil**, efek grafis mati, dan `rdp_fps` lebih tinggi (**`60`** membuat desktop/klik terasa lebih responsif, tapi memakan CPU — trade-off dengan FPS game).
+
+> Catatan jujur: tweak driver `MouseDataQueueSize` / `KeyboardDataQueueSize` **sengaja tidak dipakai** di sini karena nilainya hanya dibaca saat driver dimuat (butuh reboot), dan runner tidak pernah reboot → efeknya cuma placebo.
+
+---
+
 ## 🐢 Kenapa Game Cuma 5 FPS? (Akar Masalah & Solusinya)
 
 Runner GitHub `windows-2022` = **4 vCPU + 16 GB RAM + TANPA GPU** (hanya *Microsoft Basic Render Driver* / WARP). Artinya **seluruh pixel 3D dihitung oleh CPU**. Itu bukan bug skrip, tapi memang batas fisik — dan sisanya adalah perang memperebutkan 4 core yang sama:

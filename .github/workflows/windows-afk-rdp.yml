@@ -204,7 +204,7 @@ jobs:
           $freeC = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
           $freeD = if (Get-PSDrive D -ErrorAction SilentlyContinue) { [math]::Round((Get-PSDrive D).Free / 1GB, 1) } else { 0 }
           $cpuProcs = @(Get-CimInstance Win32_Processor)
-          $cpuName = $cpuProcs[0].Name.Trim()
+          $cpuName = "$($cpuProcs[0].Name)".Trim()
           $cpuCores = ($cpuProcs | Measure-Object -Property NumberOfCores -Sum).Sum
           $cpuThreads = ($cpuProcs | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $osRamGb = [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize / 1MB, 1)
@@ -225,6 +225,39 @@ jobs:
           $fpsLabel = if ($dwmInterval) { "$([math]::Round(1000 / $dwmInterval)) FPS" } else { "default Windows" }
           $rasterThreads = [Environment]::GetEnvironmentVariable("LP_NUM_THREADS", "Machine")
 
+          # --- Diagnostik latensi input: Tailscale DIRECT vs RELAY (DERP) ---------------------
+          # Kalau koneksi lewat relay DERP, setiap klik/gerakan mouse harus menempuh rute jauh ->
+          # inilah penyebab "klik terasa ada jeda" walau CPU server idle.
+          $peerLines = @()
+          $relayWarn = $false
+          $pingLine = ""
+          try {
+            if ($tsStatus.Peer) {
+              foreach ($peerProp in $tsStatus.Peer.PSObject.Properties) {
+                $peer = $peerProp.Value
+                if (-not $peer.Online) { continue }
+                if ($peer.CurAddr) {
+                  $peerLines += "$($peer.HostName) = DIRECT ($($peer.CurAddr))"
+                } elseif ($peer.Relay) {
+                  $peerLines += "$($peer.HostName) = RELAY $($peer.Relay) (latency tinggi!)"
+                  $relayWarn = $true
+                } else {
+                  $peerLines += "$($peer.HostName) = tidak diketahui"
+                }
+              }
+              $firstOnline = ($tsStatus.Peer.PSObject.Properties | ForEach-Object { $_.Value } | Where-Object { $_.Online } | Select-Object -First 1)
+              if ($firstOnline -and (Test-Path $tsExe)) {
+                $pingOut = (& $tsExe ping -c 3 --timeout 3s $firstOnline.HostName 2>&1 | Out-String)
+                $pingMatch = [regex]::Matches($pingOut, 'in ([0-9.]+) ?ms')
+                if ($pingMatch.Count -gt 0) {
+                  $rttValues = $pingMatch | ForEach-Object { [double]$_.Groups[1].Value }
+                  $pingLine = "$([math]::Round(($rttValues | Measure-Object -Average).Average, 0)) ms"
+                }
+              }
+            }
+          } catch {}
+          if (-not $pingLine) { $pingLine = "tidak terukur" }
+
           Write-Host ""
           Write-Host "================================================================" -ForegroundColor Green
           Write-Host "   S-RDP (AFK GAMING EDITION) SUDAH AKTIF & SIAP DIGUNAKAN!     " -ForegroundColor Green
@@ -235,6 +268,14 @@ jobs:
           }
           Write-Host " Port RDP            : 3389 (Frame pacing $fpsLabel)"
           Write-Host " Jalur Render        : $renderPath"
+          Write-Host " Latensi Tailscale   : $pingLine (semakin kecil = klik semakin responsif)" -ForegroundColor Yellow
+          foreach ($pl in $peerLines) { Write-Host "   - $pl" }
+          if ($relayWarn) {
+            Write-Host " PERINGATAN: koneksi lewat RELAY DERP (bukan direct) -> input terasa berjeda." -ForegroundColor Red
+            Write-Host "   Perbaiki: pastikan aplikasi Tailscale di HP/PC kamu mengizinkan UDP," -ForegroundColor Red
+            Write-Host "   aktifkan 'Use Tailscale DNS'/'Direct connections', atau jalankan" -ForegroundColor Red
+            Write-Host "   'tailscale ping <hostname>' sampai muncul 'via <IP>:41641'." -ForegroundColor Red
+          }
           Write-Host " Mesa3D OpenGL       : $mesaActive (LP_NUM_THREADS=$rasterThreads)"
           Write-Host " Username            : $($env:RDP_USER)" -ForegroundColor Cyan
           Write-Host " Password            : (Sesuai Secret RDP_PASSWORD kamu)" -ForegroundColor Cyan
@@ -264,6 +305,8 @@ jobs:
             "| **Spesifikasi Mesin** | ``$cpuName`` (**$cpuCores Cores / $cpuThreads vCPU Threads**, **$osRamGb GB RAM + 20 GB Pagefile**) |",
             "| **Folder Anti-Reset** | ``$vaultRoot`` *(Atomic AES-256 Backup ke GitHub Release ``s-rdp-vault``)* |",
             "| **Jalur Render** | ``$renderPath`` — Mesa3D OpenGL: **$mesaActive** (`LP_NUM_THREADS=$rasterThreads`) |",
+            "| **Latensi Tailscale** | ``$pingLine`` — $(if ($relayWarn) { '**RELAY DERP (input berjeda!)**' } else { 'Direct/low-latency' }) |",
+            "| **Input Latency Tuning** | ``MenuShowDelay=0 ms`` · ``MouseHoverTime=0`` · pointer accel OFF · key-repeat instan |",
             "| **Frame Pacing RDP** | ``$fpsLabel`` *(turunkan ke 24/15 bila CPU masih penuh)* |",
             "| **Resolusi Console AFK** | ``1280x720 @ 100% DPI`` *(Samakan resolusi aplikasi RDP ke 1280x720 untuk Auto-Clicker)* |",
             "| **Fitur Keamanan Data** | Anti-Reset Vault, Steam/Discord, DirectX+VC++, Mesa3D, dan pembersihan SDK **selalu aktif** |",

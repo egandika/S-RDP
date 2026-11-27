@@ -203,6 +203,7 @@ if (-not (Test-Path "HKLM:\SOFTWARE\Microsoft\ServerManager")) {
 New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\ServerManager" -Name "DoNotOpenServerManagerAtLogon" -Value 1 -PropertyType DWORD -Force -ErrorAction SilentlyContinue | Out-Null
 
 # Favor Foreground Applications (Win32PrioritySeparation = 38 / 0x26)
+# Short, variable quantum + boost foreground: thread input & render game dapat CPU lebih cepat -> klik terasa responsif.
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 38 -Type DWord -Force
 
 # Multimedia Class Scheduler Service (MMCSS) — 0% Background Reserve, Max Priority for Games
@@ -298,6 +299,35 @@ if (Test-Path $DefaultNtUser) {
         & reg add "HKU\SrdpDefault\Control Panel\Desktop\WindowMetrics" /v MinAnimate /t REG_SZ /d "0" /f >$null 2>&1
         & reg add "HKU\SrdpDefault\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f >$null 2>&1
         & reg add "HKU\SrdpDefault\System\GameConfigStore" /v GameDVR_Enabled /t REG_DWORD /d 0 /f >$null 2>&1
+
+        # ---- INPUT LATENCY (klik/ketik terasa telat) --------------------------------------------------
+        # Semua nilai ini per-user, jadi ditanam di Default Hive agar sudah aktif sejak logon pertama.
+        # MenuShowDelay default 400 ms  -> 0 ms (menu langsung terbuka, ini jeda yang paling terasa saat klik)
+        # MouseHoverTime default 400 ms -> 0 ms (tooltip/tombol tidak "menunggu")
+        # DragFullWindows=0             -> saat drag jendela hanya outline yang digambar (jauh lebih responsif di RDP)
+        # ActiveWndTrkTimeout=0         -> tracking jendela saat drag tidak menunggu
+        # KeyboardDelay=0/KeyboardSpeed=31 -> key repeat instan (default: tunda 1 ~ 500 ms)
+        # MouseSpeed/Threshold=0 + SmoothMouse*Curve nol -> "Enhance pointer precision" OFF (accelerasi bikin terasa lag)
+        # MouseTrails=0, CursorShadow=0 -> kursor tidak tertinggal bayangan
+        # ClickLock=0                   -> klik tidak ditahan sistem
+        $InputDesktop = "HKU\SrdpDefault\Control Panel\Desktop"
+        & reg add $InputDesktop /v MenuShowDelay /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputDesktop /v MouseHoverTime /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputDesktop /v DragFullWindows /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputDesktop /v ActiveWndTrkTimeout /t REG_DWORD /d 0 /f >$null 2>&1
+        & reg add $InputDesktop /v KeyboardDelay /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputDesktop /v KeyboardSpeed /t REG_SZ /d "31" /f >$null 2>&1
+
+        $InputMouse = "HKU\SrdpDefault\Control Panel\Mouse"
+        & reg add $InputMouse /v MouseSpeed /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputMouse /v MouseThreshold1 /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputMouse /v MouseThreshold2 /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputMouse /v MouseSensitivity /t REG_SZ /d "10" /f >$null 2>&1
+        & reg add $InputMouse /v MouseTrails /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputMouse /v ClickLock /t REG_SZ /d "0" /f >$null 2>&1
+        & reg add $InputMouse /v SmoothMouseXCurve /t REG_BINARY /d 00000000000000000000000000000000000000000000000000000000000000000000000000000000 /f >$null 2>&1
+        & reg add $InputMouse /v SmoothMouseYCurve /t REG_BINARY /d 00000000000000000000000000000000000000000000000000000000000000000000000000000000 /f >$null 2>&1
+        & reg add "HKU\SrdpDefault\Control Panel\Cursors" /v CursorShadow /t REG_SZ /d "0" /f >$null 2>&1
         [System.GC]::Collect()
         Start-Sleep -Milliseconds 300
         & reg unload "HKU\SrdpDefault" >$null 2>&1
@@ -722,7 +752,16 @@ KENAPA GAME DI SINI BISA 5 FPS (DAN CARA NAIKKANNYA):
    - Klik "Simpan-Data-Sekarang.bat" kapan pun mau save manual, atau klik
      "Matikan-Server-RDP.bat" saat selesai (otomatis backup sebelum mati).
 
-3. TIP KLIEN RDP (di HP/PC kamu):
+3. KALAU KLIK TERASA ADA JEDA (INPUT LATENCY):
+   - Server sudah di-set 0 ms: MenuShowDelay, MouseHoverTime, key-repeat instan,
+     pointer acceleration OFF, kursor tanpa bayangan, drag hanya outline.
+   - Cek "Latensi Tailscale" di ringkasan run: kalau RELAY DERP => itu penyebabnya.
+   - Di klien: Experience = LAN (10 Mbps or higher), Color depth 16-bit.
+   - Di HP/tablet: matikan mode sentuh / "tap and hold" (menahan klik ~1 detik),
+     pakai mouse/trackpad mode. Matikan "Enhance pointer precision" di Windows lokal.
+   - Jedanya di dalam game = waktu render 1 frame: kecilkan resolusi & efek grafis.
+
+4. TIP KLIEN RDP (di HP/PC kamu):
    - Experience: pilih "LAN (10 Mbps or higher)".
    - Color depth: 16-bit (lebih ringan untuk encoder software).
    - Jangan pakai mode fullscreen borderless pada aplikasi RDP.
